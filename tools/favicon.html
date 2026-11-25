@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Myxa.js favicon</title>
+<style>body{margin:20px;background:#888;display:flex;gap:20px;align-items:flex-end}canvas{image-rendering:auto}</style>
+</head>
+<body>
+<script type="module">
+  // The demo's favicon: the jumping spider peeking in from a corner, drawn by
+  // the library's own renderer.  `node tools/favicon.mjs` saves the PNGs.
+  import { Spider, World, Random, drawSpider } from '../src/index.js';
+
+  const BG = '#f4efe6';
+  const EDGE = '#d9cdb8';
+
+  function pose() {
+    const s = new Spider(new World(4000, 4000), [], new Random(4));
+    s.x = s.y = 2000;
+    for (let i = 0; i < 70; i++) s.update(1 / 60);
+    const p = s.pose;
+    p.palp = 0.6;
+    p.bite = 0.1;
+    p.height = 0;
+    // Front legs reaching forward over the edge, one a little raised.
+    p.feet[0] = [0.95, -0.42];
+    p.feet[1] = [0.98, 0.30];
+    p.light = [-0.55, -0.84];
+    return p;
+  }
+
+  /** Draw one icon of `size` px into a new canvas. */
+  function icon(size) {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const ctx = c.getContext('2d');
+    const r = size * 0.2;
+    ctx.beginPath();
+    ctx.roundRect(0, 0, size, size, r);
+    ctx.fillStyle = BG;
+    ctx.fill();
+    ctx.lineWidth = Math.max(1, size / 32);
+    ctx.strokeStyle = EDGE;
+    ctx.stroke();
+    ctx.save();
+    ctx.clip();
+    // Body length, and where the carapace sits: low in the bottom-left corner,
+    // heading up and to the right, the abdomen hidden past the rounded corner.
+    // A tab-sized icon gets a closer crop, or the spider is a speck.
+    const small = size <= 32;
+    const L = size * (small ? 1.15 : 0.8);
+    ctx.translate(size * (small ? 0.02 : 0.06), size * (small ? 0.98 : 0.94));
+    drawSpider(ctx, L, -Math.PI / 4, pose(), 1, size >= 64 ? 'high' : 'low');
+    ctx.restore();
+    return c;
+  }
+
+  const SIZES = [16, 32, 64, 180];
+  window.ICONS = {};
+  for (const size of SIZES) {
+    const c = icon(size);
+    window.ICONS[size] = c.toDataURL('image/png');
+    document.body.append(c);
+  }
+  // Big ones for looking at, and the small ones blown up to judge them.
+  document.body.append(icon(360));
+  for (const size of [16, 32]) {
+    const z = document.createElement('canvas');
+    z.width = z.height = 160;
+    const zc = z.getContext('2d');
+    zc.imageSmoothingEnabled = false;
+    zc.drawImage(icon(size), 0, 0, 160, 160);
+    document.body.append(z);
+  }
+</script>
+</body>
+</html>

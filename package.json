@@ -18,7 +18,8 @@
     "build": "esbuild src/index.js --bundle --format=esm --outfile=dist/myxa.esm.js && esbuild src/browser.js --bundle --format=iife --minify --outfile=dist/myxa.min.js",
     "test": "node --test test/",
     "demo": "python3 -m http.server 8000",
-    "check:browser": "node test/browser-check.mjs"
+    "check:browser": "node test/browser-check.mjs",
+    "favicon": "node tools/favicon.mjs"
   },
   "keywords": [
     "fly",
