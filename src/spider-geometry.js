@@ -21,11 +21,6 @@ export const LEGS = [
   [[-0.08, 0.17], [-0.79, 0.72], 0.415, 0.435, 0.15, -1.0],
 ];
 
-/** Spiders walk an alternating tetrapod: legs 1 and 3 of one side swing with
- * legs 2 and 4 of the other. */
-export const TETRAPOD_A = [0, 4, 3, 7];
-export const TETRAPOD_B = [1, 5, 2, 6];
-
 /** Legs gathered in under the body, as when crouched to jump. */
 export const CROUCHED = [
   [0.62, -0.42], [0.62, 0.42],
@@ -34,13 +29,63 @@ export const CROUCHED = [
   [-0.60, -0.55], [-0.60, 0.55],
 ];
 
+/** Height of the hips (coxae) above the page, in body lengths. */
+export const HIP_HEIGHT = 0.12;
+/** How high a foot is raised at the top of a step. */
+export const STEP_HEIGHT = 0.14;
+/** The tarsus comes down to the page at this angle from the horizontal. */
+const TARSUS_PITCH = (50 * Math.PI) / 180;
+/** How far a knee bows sideways off the hip-to-foot line, per unit of its
+ * height.  A spider's knee bends *upwards*: seen from above, a leg is nearly
+ * a straight spoke from body to foot, with only a slight curve.  Folding the
+ * knee flat on the page instead (as a 2D solve does) pulls the knees of legs
+ * I and II towards each other, and of III and IV, so the legs read as pairs. */
+const KNEE_BOW = 0.45;
+
+/**
+ * Joints of leg `i` with its foot at `foot` (body-local x, y) raised by
+ * `lift` (0..1): [hip, knee, ankle, foot], each [x, y, z] with z the height
+ * above the page in body lengths.
+ *
+ * The leg is solved in the vertical plane through hip and foot -- femur up to
+ * a raised knee, tibia down to the ankle, tarsus down to the page -- and the
+ * knee then bowed a little to the side its leg naturally curves.
+ */
+export function legJoints(i, foot, lift = 0) {
+  const [coxa, , femur, tibia, tarsus, kneeSign] = LEGS[i];
+  const dx = foot[0] - coxa[0];
+  const dy = foot[1] - coxa[1];
+  const d = Math.hypot(dx, dy) || 1e-6;
+  const ux = dx / d;
+  const uy = dy / d;
+  const fz = STEP_HEIGHT * lift;
+  // Ankle: back along the leg from the foot and up, along the tarsus.
+  const ar = d - tarsus * Math.cos(TARSUS_PITCH);
+  const az = fz + tarsus * Math.sin(TARSUS_PITCH);
+  // Two-bone solve from hip (0, HIP_HEIGHT) to ankle (ar, az) in the plane,
+  // taking the knee-up solution.
+  const vr = ar;
+  const vz = az - HIP_HEIGHT;
+  const reach = Math.max(1e-5, Math.min(Math.hypot(vr, vz), (femur + tibia) * 0.995));
+  const cosK = Math.max(-1, Math.min(1, (femur * femur + reach * reach - tibia * tibia) / (2 * femur * reach)));
+  const base = Math.atan2(vz, vr);
+  const up = base + Math.acos(cosK);
+  const kr = femur * Math.cos(up);
+  const kz = HIP_HEIGHT + femur * Math.sin(up);
+  // Bow the knee sideways a little, the way the leg's own joints curve it.
+  const bow = KNEE_BOW * (kz - HIP_HEIGHT) * kneeSign;
+  const knee = [coxa[0] + ux * kr - uy * bow, coxa[1] + uy * kr + ux * bow, kz];
+  const ankle = [coxa[0] + ux * ar, coxa[1] + uy * ar, az];
+  return [[coxa[0], coxa[1], HIP_HEIGHT], knee, ankle, [foot[0], foot[1], fz]];
+}
+
 export function makeSpiderPose() {
   return {
     feet: LEGS.map((l) => [l[1][0], l[1][1]]),
     lift: [0, 0, 0, 0, 0, 0, 0, 0],
     palp: 0, // pedipalp waggle
+    palpSplit: 0, // how far the two palps are out of step
     bite: 0, // chelicerae working, 0 = closed, 1 = spread
-    crouch: 0, // 0 = standing, 1 = gathered to jump
     height: 0, // body lengths above the surface, mid-leap
     light: [-0.6, -0.8],
   };

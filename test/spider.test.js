@@ -207,3 +207,114 @@ test('respawnDelay is configurable', () => {
   s._consume();
   assert.ok(released[0] >= 1 && released[0] <= 2);
 });
+
+// -- the gait ----------------------------------------------------------------
+
+function walkRun(seeds = [2, 5, 7], minutes = 3, each) {
+  for (const seed of seeds) {
+    const [f, s] = pair(seed);
+    let px = s.x, py = s.y, ph = s.heading;
+    for (let i = 0; i < 60 * 60 * minutes; i++) {
+      step(f, s);
+      const moved = Math.hypot(s.x - px, s.y - py) + Math.abs(wrap(s.heading - ph)) * s.length;
+      px = s.x;
+      py = s.y;
+      ph = s.heading;
+      each(s, moved, i);
+    }
+  }
+}
+
+test('neighbouring feet never cross', () => {
+  // Each leg works its own sector about the hip; a foot that ends up behind
+  // the next leg's reads as legs tangled over one another.
+  let crossed = 0;
+  walkRun([2, 5, 7, 11], 3, (s) => {
+    if (s.state === 'pounce') return;
+    for (const side of [0, 1]) {
+      const ang = [0, 1, 2, 3].map((n) => {
+        const [x, y] = s.pose.feet[n * 2 + side];
+        return Math.atan2(Math.abs(y), x);
+      });
+      for (let n = 0; n < 3; n++) if (ang[n] > ang[n + 1] + 0.02) crossed++;
+    }
+  });
+  assert.equal(crossed, 0);
+});
+
+test('a spider that stops puts its feet down', () => {
+  // A raised foot finishes its step whatever the body does; it does not hang
+  // in the air until the spider walks on.  (Standing legs may still re-foot,
+  // but every step is over in its allotted time.)
+  let still = 0, standing = 0, worst = 0;
+  const aloft = new Array(8).fill(0);
+  walkRun([2, 5, 7], 3, (s, moved) => {
+    still = moved < 0.01 ? still + 1 : 0;
+    for (let k = 0; k < 8; k++) aloft[k] = s._legPhase[k] < 0.36 && still > 0 ? aloft[k] + 1 : 0;
+    if (still < 15) return;
+    standing++;
+    for (let k = 2; k < 8; k++) worst = Math.max(worst, aloft[k]);
+  });
+  assert.ok(standing > 1000, 'not enough standing sampled');
+  assert.ok(worst <= 10, `a foot stayed up ${worst} frames while the spider stood still`);
+});
+
+test('legs move in a wave, not in lock-step', () => {
+  // The tetrapod pairs legs I+III of one side with II+IV of the other, but a
+  // spider's legs do not move as one the way a beetle's tripod does: on each
+  // side a wave runs back to front, so leg III leads leg I and leg IV leads
+  // leg II by a fraction of a cycle, and the two sides alternate.
+  const lead = (a, b) => ((((a - b) % 1) + 1.5) % 1) - 0.5;
+  const sums = { threeOverOne: 0, fourOverTwo: 0, leftRight: 0 };
+  let n = 0;
+  walkRun([2, 5, 7], 3, (s, moved) => {
+    if (moved < 0.01 || !['patrol', 'stalk', 'hide', 'retreat'].includes(s.state)) return;
+    const p = s._legPhase;
+    for (const side of [0, 1]) {
+      sums.threeOverOne += lead(p[4 + side], p[0 + side]);
+      sums.fourOverTwo += lead(p[6 + side], p[2 + side]);
+    }
+    sums.leftRight += Math.abs(lead(p[0], p[1]));
+    n++;
+  });
+  assert.ok(n > 1000, 'not enough walking sampled');
+  const m31 = sums.threeOverOne / (2 * n), m42 = sums.fourOverTwo / (2 * n), lr = sums.leftRight / n;
+  assert.ok(m31 > 0.06 && m31 < 0.3, `leg III leads leg I by ${m31.toFixed(2)} of a cycle`);
+  assert.ok(m42 > 0.06 && m42 < 0.3, `leg IV leads leg II by ${m42.toFixed(2)} of a cycle`);
+  assert.ok(lr > 0.35, `left and right front legs only ${lr.toFixed(2)} of a cycle apart`);
+});
+
+test('legs stay fanned out and never close up into pairs', () => {
+  // Neighbouring legs on a side step in antiphase, so whenever one is at the
+  // back of its sweep the next is at the front.  With sweeps that are large
+  // against the spacing they meet, and the legs read as bunched in twos.
+  const ang = ([x, y]) => Math.atan2(Math.abs(y), x);
+  const restGap = [0, 1, 2].map((n) => ang(SPIDER_LEGS[(n + 1) * 2][1]) - ang(SPIDER_LEGS[n * 2][1]));
+  const ratios = [];
+  walkRun([2, 5, 7, 11], 3, (s) => {
+    if (!['patrol', 'stalk', 'hide', 'retreat', 'lurk'].includes(s.state)) return;
+    for (const side of [0, 1]) {
+      for (let n = 0; n < 3; n++) {
+        if (s._wave > 0 && s._waveLeg === n * 2 + side) continue; // a raised, waving leg
+        ratios.push((ang(s.pose.feet[(n + 1) * 2 + side]) - ang(s.pose.feet[n * 2 + side])) / restGap[n]);
+      }
+    }
+  });
+  ratios.sort((a, b) => a - b);
+  const p5 = ratios[Math.floor(ratios.length * 0.05)];
+  assert.ok(p5 > 0.6, `5% of the time neighbouring feet are only ${p5.toFixed(2)} of their rest spacing apart`);
+  assert.ok(ratios[0] > 0.3, `neighbouring feet came within ${ratios[0].toFixed(2)} of their rest spacing`);
+});
+
+test('the mouthparts move while it is not eating', () => {
+  // The palps waggle nearly all the time and the chelicerae flex now and then.
+  let bites = 0, palpRange = [Infinity, -Infinity], frames = 0;
+  walkRun([2], 2, (s) => {
+    if (['seize', 'haul', 'feed'].includes(s.state)) return;
+    frames++;
+    if (s.pose.bite > 0.1) bites++;
+    palpRange = [Math.min(palpRange[0], s.pose.palp), Math.max(palpRange[1], s.pose.palp)];
+  });
+  assert.ok(bites / frames > 0.03, 'the chelicerae hardly ever move');
+  assert.ok(palpRange[1] - palpRange[0] > 1, 'the palps hardly move');
+});

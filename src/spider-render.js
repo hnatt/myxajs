@@ -11,9 +11,9 @@
 // to the body, so they are drawn once per size into a cached layer and
 // blitted; the legs' strokes are batched one path per width.
 
-import { LEGS } from './spider-geometry.js';
+import { legJoints } from './spider-geometry.js';
 import { Random } from './random.js';
-import { lobe, pathOf, bbox, shade, ik, rgb } from './fly-render.js';
+import { lobe, pathOf, bbox, shade, rgb } from './fly-render.js';
 
 const TAU = Math.PI * 2;
 
@@ -286,18 +286,10 @@ function sheen(ctx, path, box, lv) {
 
 const SEGMENTS = [[0, 0.066], [1, 0.044], [2, 0.024]];
 
-function legJoints(idx, foot) {
-  const [coxa, , femur, tibia, tarsus, kneeSign] = LEGS[idx];
-  const ax = foot[0] - coxa[0];
-  const ay = foot[1] - coxa[1];
-  const d = Math.hypot(ax, ay) || 1e-5;
-  const ankle = [foot[0] - (ax / d) * tarsus, foot[1] - (ay / d) * tarsus];
-  return [coxa, ik(coxa, ankle, femur, tibia, kneeSign), ankle, foot];
-}
 
 /** All eight legs, drawn in batched passes: one path per width class. */
-function drawLegs(ctx, g, feet, detail) {
-  const joints = feet.map((f, i) => legJoints(i, f));
+function drawLegs(ctx, g, feet, detail, lifts) {
+  const joints = feet.map((f, i) => legJoints(i, f, lifts[i] ?? 0));
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
@@ -359,6 +351,16 @@ function drawLegs(ctx, g, feet, detail) {
     });
     ctx.stroke();
   }
+
+  // Knees: the highest point of each leg, so they catch the light.
+  ctx.fillStyle = 'rgba(190,170,140,0.55)';
+  ctx.beginPath();
+  for (const j of joints) {
+    const [kx, ky] = j[1];
+    ctx.moveTo(kx + 0.026, ky);
+    ctx.arc(kx, ky, 0.026, 0, TAU);
+  }
+  ctx.fill();
 
   // Dark tarsal tips.
   ctx.strokeStyle = rgb(LEG_BAND);
@@ -425,40 +427,96 @@ function drawBody(ctx, g, pose, detail, devScale) {
   ctx.fill();
 
   // --- chelicerae: the jaws the prey is seized and macerated with.  Spiders
-  // --- do not chew so much as shred, working them back and forth.
+  // --- do not chew so much as shred, working them apart and together.  Seen
+  // --- from above they stand out in front of the face, below the big eyes;
+  // --- each swings outward from its base and the fang at its tip unfolds.
+  //     A lighter rim keeps them from vanishing into the dark carapace.
+  const bite = pose.bite;
   for (const sign of [-1, 1]) {
     ctx.save();
-    ctx.translate(0.4, 0.052 * sign);
-    ctx.rotate((0.12 + 0.5 * pose.bite) * sign);
+    ctx.translate(0.385, 0.036 * sign);
+    ctx.rotate((0.06 + 0.62 * bite) * sign);
     ctx.beginPath();
-    ctx.ellipse(0, 0, 0.1, 0.058, 0, 0, TAU);
-    ctx.fillStyle = 'rgb(38,29,22)';
+    ctx.ellipse(0.07, 0, 0.078, 0.044, 0, 0, TAU);
+    ctx.fillStyle = 'rgb(52,40,30)';
     ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-    ctx.lineWidth = 0.007;
+    ctx.strokeStyle = 'rgba(150,128,100,0.55)';
+    ctx.lineWidth = 0.009;
     ctx.stroke();
-    // Fang, folded along the chelicera until it strikes.
-    ctx.strokeStyle = 'rgb(8,6,5)';
+    // Fang: folded back across the tip of the chelicera, pointing inward,
+    // until it unfolds to strike or to shred.
+    const fold = (1.75 - 1.45 * bite) * -sign;
+    ctx.strokeStyle = 'rgb(14,10,8)';
     ctx.lineCap = 'round';
-    ctx.lineWidth = 0.024;
+    ctx.lineWidth = 0.02;
     ctx.beginPath();
-    ctx.moveTo(0.07, 0.014 * sign);
-    ctx.lineTo(0.07 + 0.095 * (0.3 + 0.7 * pose.bite), (0.014 + 0.055 * pose.bite) * sign);
+    ctx.moveTo(0.135, 0.008 * sign);
+    ctx.lineTo(0.135 + 0.06 * Math.cos(fold), 0.008 * sign + 0.06 * Math.sin(fold));
     ctx.stroke();
     ctx.restore();
   }
 
-  // --- pedipalps, held in front of the face and waggled ---
-  ctx.strokeStyle = rgb(PALP);
+  // --- pedipalps, held in front of the face and waggled: two short pale
+  // --- segments each, with a dark tip, flicking out of step with each other.
   ctx.lineCap = 'round';
-  ctx.lineWidth = 0.055;
+  ctx.lineJoin = 'round';
+  const palps = [-1, 1].map((sign) => {
+    const swing = pose.palp + sign * (pose.palpSplit || 0);
+    const a = (0.42 + 0.3 * swing) * sign;
+    const b = a + 0.35 * sign * (0.6 - 0.4 * swing);
+    const o = [0.4, 0.085 * sign];
+    const k = [o[0] + 0.075 * Math.cos(a), o[1] + 0.075 * Math.sin(a)];
+    const t = [k[0] + 0.07 * Math.cos(b), k[1] + 0.07 * Math.sin(b)];
+    return [o, k, t];
+  });
+  ctx.strokeStyle = rgb(PALP);
+  ctx.lineWidth = 0.05;
   ctx.beginPath();
-  for (const sign of [-1, 1]) {
-    const a = (0.3 + 0.18 * pose.palp) * sign;
-    const ox = 0.4;
-    const oy = 0.075 * sign;
-    ctx.moveTo(ox, oy);
-    ctx.lineTo(ox + 0.13 * Math.cos(a), oy + 0.13 * Math.sin(a));
+  for (const [o, k, t] of palps) {
+    ctx.moveTo(o[0], o[1]);
+    ctx.lineTo(k[0], k[1]);
+    ctx.lineTo(t[0], t[1]);
+  }
+  ctx.stroke();
+  ctx.strokeStyle = rgb(LEG_BAND);
+  ctx.lineWidth = 0.044;
+  ctx.beginPath();
+  for (const [, k, t] of palps) {
+    ctx.moveTo(k[0] + (t[0] - k[0]) * 0.55, k[1] + (t[1] - k[1]) * 0.55);
+    ctx.lineTo(t[0], t[1]);
+  }
+  ctx.stroke();
+}
+
+/** How far a joint's shadow falls from it, per body length of height. */
+const LEG_SHADOW_THROW = 0.38;
+
+/**
+ * The legs' shadows on the page.  Every joint casts its shadow away from the
+ * light by its height, so the shadow of a planted leg meets the leg at the
+ * foot and swings wide at the raised knee, and a lifted foot visibly parts
+ * from its shadow.  Seen from above, that is most of what tells a step from
+ * a slide.
+ */
+function legShadows(ctx, pose, alpha) {
+  const lv = pose.light;
+  const h = pose.height;
+  const joints = pose.feet.map((f, i) =>
+    legJoints(i, f, pose.lift[i] ?? 0).map(([x, y, z]) => {
+      const t = (z + h) * LEG_SHADOW_THROW;
+      return [x - lv[0] * t, y - lv[1] * t];
+    }));
+  // One path at one width: a shadow does not need the leg's taper.
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = `rgba(13,10,8,${alpha})`;
+  ctx.lineWidth = 0.036;
+  ctx.beginPath();
+  for (const j of joints) {
+    ctx.moveTo(j[0][0], j[0][1]);
+    ctx.lineTo(j[1][0], j[1][1]);
+    ctx.lineTo(j[2][0], j[2][1]);
+    ctx.lineTo(j[3][0], j[3][1]);
   }
   ctx.stroke();
 }
@@ -472,6 +530,11 @@ export function drawSpiderShadow(ctx, scale, heading, pose) {
   const blur = 1 + h * 0.2;
   const alpha = (0.34 / (1 + h * 1.8)) * fade;
   if (alpha < 0.008) return;
+  ctx.save();
+  ctx.rotate(heading);
+  ctx.scale(scale, scale);
+  legShadows(ctx, pose, alpha * 0.45);
+  ctx.restore();
   ctx.save();
   ctx.translate(-light[0] * off, -light[1] * off);
   ctx.rotate(heading);
@@ -507,7 +570,7 @@ export function drawSpider(ctx, scale, heading, pose, dpr = 1, detailMode = 'aut
   ctx.scale(s, s);
   const devScale = scale * dpr;
   const detail = detailMode === 'high' || (detailMode === 'auto' && devScale >= DETAIL_PX);
-  drawLegs(ctx, g, pose.feet, detail);
+  drawLegs(ctx, g, pose.feet, detail, pose.lift);
   drawBody(ctx, g, pose, detail, devScale);
   ctx.restore();
 }

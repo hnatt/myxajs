@@ -164,6 +164,18 @@ webs. They stalk:
 * **hide**: slip over the edge and out of sight, and come back out at the edge
   nearest the fly.
 
+**How it walks.** A spider's knee bends upward, so from above each leg is a
+nearly straight spoke from body to foot, and the eight legs stay evenly fanned
+out. Each leg sweeps only a small arc. Steps follow the alternating tetrapod
+(legs I and III of one side with II and IV of the other), with a wave running
+back to front along each side, so the legs ripple rather than lifting four at
+once. A leg flicks forward quickly and stays planted for most of the cycle. A
+leg nearing the end of its reach steps early if its neighbours are down. When
+the spider stops, a raised foot finishes its step and comes down. It walks in
+short dashes with pauses, as jumping spiders do. Each joint casts a shadow
+from its own height, so a lifted foot visibly leaves its shadow. Its palps
+waggle almost constantly, and it flexes its chelicerae every few seconds.
+
 The fly ignores a spider creeping up from a distance, which is why the stalk
 works, but it answers a leap by bolting into the air. Its escape reflex has a
 latency of a few tens of milliseconds, and that margin is the spider's whole

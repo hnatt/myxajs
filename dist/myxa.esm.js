@@ -926,8 +926,6 @@ var LEGS2 = [
   [[-0.08, -0.17], [-0.79, -0.72], 0.415, 0.435, 0.15, 1],
   [[-0.08, 0.17], [-0.79, 0.72], 0.415, 0.435, 0.15, -1]
 ];
-var TETRAPOD_A = [0, 4, 3, 7];
-var TETRAPOD_B = [1, 5, 2, 6];
 var CROUCHED = [
   [0.62, -0.42],
   [0.62, 0.42],
@@ -938,16 +936,43 @@ var CROUCHED = [
   [-0.6, -0.55],
   [-0.6, 0.55]
 ];
+var HIP_HEIGHT = 0.12;
+var STEP_HEIGHT = 0.14;
+var TARSUS_PITCH = 50 * Math.PI / 180;
+var KNEE_BOW = 0.45;
+function legJoints(i, foot, lift = 0) {
+  const [coxa, , femur, tibia, tarsus, kneeSign] = LEGS2[i];
+  const dx = foot[0] - coxa[0];
+  const dy = foot[1] - coxa[1];
+  const d = Math.hypot(dx, dy) || 1e-6;
+  const ux = dx / d;
+  const uy = dy / d;
+  const fz = STEP_HEIGHT * lift;
+  const ar = d - tarsus * Math.cos(TARSUS_PITCH);
+  const az = fz + tarsus * Math.sin(TARSUS_PITCH);
+  const vr = ar;
+  const vz = az - HIP_HEIGHT;
+  const reach = Math.max(1e-5, Math.min(Math.hypot(vr, vz), (femur + tibia) * 0.995));
+  const cosK = Math.max(-1, Math.min(1, (femur * femur + reach * reach - tibia * tibia) / (2 * femur * reach)));
+  const base = Math.atan2(vz, vr);
+  const up = base + Math.acos(cosK);
+  const kr = femur * Math.cos(up);
+  const kz = HIP_HEIGHT + femur * Math.sin(up);
+  const bow = KNEE_BOW * (kz - HIP_HEIGHT) * kneeSign;
+  const knee = [coxa[0] + ux * kr - uy * bow, coxa[1] + uy * kr + ux * bow, kz];
+  const ankle = [coxa[0] + ux * ar, coxa[1] + uy * ar, az];
+  return [[coxa[0], coxa[1], HIP_HEIGHT], knee, ankle, [foot[0], foot[1], fz]];
+}
 function makeSpiderPose() {
   return {
     feet: LEGS2.map((l) => [l[1][0], l[1][1]]),
     lift: [0, 0, 0, 0, 0, 0, 0, 0],
     palp: 0,
     // pedipalp waggle
+    palpSplit: 0,
+    // how far the two palps are out of step
     bite: 0,
     // chelicerae working, 0 = closed, 1 = spread
-    crouch: 0,
-    // 0 = standing, 1 = gathered to jump
     height: 0,
     // body lengths above the surface, mid-leap
     light: [-0.6, -0.8]
@@ -975,12 +1000,29 @@ var HIDE_L = 1.7;
 var TRACK_RATE = 2.6;
 var AIM_NOISE = 1.6;
 var AIM_DECAY = 2.5;
-var STRIDE2 = 0.62;
-var SWING_DUTY2 = 0.45;
+var STRIDE2 = 0.38;
+var SWING_DUTY2 = 0.36;
+var SWING_MAX_T = 0.14;
+var WAVE_LAG = 0.08;
+var GAIT_SYNC = 1.2;
+var BURST_GO = [0.25, 0.8];
+var BURST_STOP = [0.1, 0.45];
+var BURST_SPEED = 1.3;
 var GAIT_TURN_RADIUS = 0.95;
 var MAX_DRAG = 0.55;
+var REST_ANGLE = LEGS2.map(([coxa, foot]) => Math.atan2(foot[1] - coxa[1], foot[0] - coxa[0]));
+var LEG_RANGE = LEGS2.map((_, i) => {
+  const n = i >> 1;
+  const gap = (a, b) => Math.abs(wrap(REST_ANGLE[a] - REST_ANGLE[b]));
+  const fwd = n > 0 ? 0.3 * gap(i, i - 2) : 0.6;
+  const back = n < 3 ? 0.3 * gap(i, i + 2) : 0.6;
+  return [fwd, back];
+});
+var STEP_EARLY_RANGE = 0.75;
+var STEP_EARLY_DRAG = 0.38;
 var BLEND_TIME2 = 0.16;
 var AIRBORNE2 = /* @__PURE__ */ new Set([FLIGHT, LANDING, LAUNCH]);
+var MOUTH_BUSY = /* @__PURE__ */ new Set([SEIZE, HAUL, FEED]);
 var Spider = class {
   /**
    * @param {import('./world.js').World} world
@@ -1007,9 +1049,24 @@ var Spider = class {
     this._blendT = 1;
     this._footWorld = [];
     this._swingFrom = [];
-    this._prevLegPhase = [0, 0, 0, 0, 0, 0, 0, 0];
+    this._swingTo = LEGS2.map(() => null);
+    this._legQuirk = LEGS2.map(() => rng.gauss(0, 0.02));
+    this._legPhase = LEGS2.map((_, i) => (this._legOffset(i, false) % 1 + 1) % 1);
+    this._prevLegPhase = [...this._legPhase];
+    this._legDt = 0;
+    this._stepEarly = [];
+    this._stanceT = LEGS2.map(() => 1);
+    this._moving = 0;
+    this._reverse = false;
+    this._footingIn = rng.uniform(0.5, 2);
+    this._burstLeft = 0;
+    this._bursting = true;
+    this._faceT = 0;
+    this._chewIn = rng.uniform(0.5, 3);
+    this._chew = 0;
+    this._chewLen = 0;
+    this._palpRate = rng.uniform(4, 7);
     this._restJitter = LEGS2.map(() => [rng.gauss(0, 0.05), rng.gauss(0, 0.06)]);
-    this._idlePhase = LEGS2.map(() => rng.uniform(0, TAU));
     this._idleT = 0;
     this._aim = 0;
     this.carried = null;
@@ -1291,11 +1348,11 @@ var Spider = class {
     } else if (state === PATROL) {
       this.stateDur = rng.uniform(2, 6);
       this.walkSpeed = rng.uniform(12, 26) * sp;
-      this._reseedFeet();
+      this._plantFeet();
     } else if (state === STALK) {
       this.stateDur = rng.uniform(20, 40);
       this.walkSpeed = rng.uniform(9, 19) * sp;
-      this._reseedFeet();
+      this._plantFeet();
     } else if (state === POUNCE) {
       this.stateDur = 0.3;
     } else if (state === RETREAT) {
@@ -1303,30 +1360,41 @@ var Spider = class {
       const far = this._edge()[0] > this._band() * 2;
       const [lo, hi] = far ? [45, 75] : [18, 30];
       this.walkSpeed = rng.uniform(lo, hi) * sp;
-      this._reseedFeet();
+      this._plantFeet();
     } else if (state === HIDE) {
       this.stateDur = rng.uniform(2, 7);
       this.walkSpeed = rng.uniform(20, 35) * sp;
-      this._reseedFeet();
+      this._plantFeet();
     } else if (state === SEIZE) {
       this.stateDur = rng.uniform(1.4, 2.6);
       this._struggle = 1;
       this._carryYaw = rng.choice([-1, 1]) * rng.uniform(1.9, 2.7);
-      this._reseedFeet();
+      this._plantFeet();
     } else if (state === HAUL) {
       this.stateDur = 14;
       this.walkSpeed = rng.uniform(13, 22) * sp;
-      this._reseedFeet();
+      this._plantFeet();
     } else if (state === FEED) {
       this.stateDur = rng.uniform(5, 9);
-      this._reseedFeet();
+      this._plantFeet();
     }
   }
   // -- locomotion -------------------------------------------------------
-  _walkTowards(tx, ty, dt, turn = 5, hold = true) {
+  /** Speed factor for stop-go walking: bursts of quick steps, then a pause. */
+  _burst(dt) {
+    this._burstLeft -= dt;
+    if (this._burstLeft <= 0) {
+      this._bursting = !this._bursting;
+      const [lo, hi] = this._bursting ? BURST_GO : BURST_STOP;
+      this._burstLeft = this.rng.uniform(lo, hi);
+    }
+    return this._bursting ? BURST_SPEED : 0;
+  }
+  _walkTowards(tx, ty, dt, turn = 5, hold = true, burst = false) {
     const desired = Math.atan2(ty - this.y, tx - this.x);
     this.heading = turnTowards(this.heading, desired, turn * dt);
-    const step = this.walkSpeed * this.world.pxPerMm * dt;
+    const pace = burst ? this._burst(dt) : 1;
+    const step = this.walkSpeed * pace * this.world.pxPerMm * dt;
     this.x += Math.cos(this.heading) * step;
     this.y += Math.sin(this.heading) * step;
     if (hold) this._holdToEdge();
@@ -1341,72 +1409,162 @@ var Spider = class {
     this._holdToEdge();
     this._stepGait(step, true);
   }
+  /** Where leg i sits in the cycle relative to the gait phase.  The tetrapod
+   * pairs I+III of one side with II+IV of the other; the wave then runs back
+   * to front (front to back when walking backwards). */
+  _legOffset(i, reverse) {
+    const n = i >> 1;
+    const group = (n + (i & 1)) % 2 === 0 ? 0.5 : 0;
+    const order = reverse ? 3 - n : n;
+    return group + order * WAVE_LAG + this._legQuirk[i];
+  }
   /** Advance the gait by a distance walked plus the arc swept by turning. */
   _stepGait(travel, reverse = false) {
     const swept = Math.abs(wrap(this.heading - this._gaitHeading)) * GAIT_TURN_RADIUS;
     this._gaitHeading = this.heading;
     const stride = STRIDE2 * this.length;
-    if (stride > 0) this.gaitPhase = (this.gaitPhase + (travel + swept * this.length) / stride) % 1;
-    this._updateGait(reverse);
+    const dg = stride > 0 ? (travel + swept * this.length) / stride : 0;
+    this.gaitPhase = (this.gaitPhase + dg) % 1;
+    this._reverse = reverse;
+    this._advanceLegs(dg);
+    this._updateGait();
   }
-  _updateGait(reverse = false) {
+  /**
+   * Move each leg on through its own cycle.
+   *
+   * Normally a leg advances with the gait, sped up or held back a little to
+   * keep its place in the wave.  But a leg in the air finishes its swing
+   * whatever the body does: stop mid-stride and the raised feet come down,
+   * rather than hanging there until the spider walks on.
+   */
+  _advanceLegs(dg) {
+    const legDt = this._legDt;
+    this._legDt = 0;
+    if (legDt > 0) {
+      const rate = dg / legDt;
+      const k = Math.min(1, 6 * legDt);
+      this._moving += (Math.min(1, rate / 1.2) - this._moving) * k;
+    }
+    const swingRate = SWING_DUTY2 / SWING_MAX_T;
+    for (let i = 0; i < 8; i++) {
+      let p = this._legPhase[i];
+      let step;
+      if (p < SWING_DUTY2) {
+        step = Math.max(dg, swingRate * legDt);
+      } else {
+        const want = ((this.gaitPhase + this._legOffset(i, this._reverse)) % 1 + 1) % 1;
+        const err = ((p - want) % 1 + 1.5) % 1 - 0.5;
+        step = dg * clamp(1 - GAIT_SYNC * err, 0.3, 1.7);
+      }
+      p += step;
+      this._legPhase[i] = p >= 1 ? p % 1 : p;
+      this._stanceT[i] = this._legPhase[i] < SWING_DUTY2 ? 0 : this._stanceT[i] + legDt;
+    }
+  }
+  _updateGait() {
     const L = this.length;
-    const way = reverse ? -1 : 1;
-    const stride = STRIDE2 * L;
+    const way = this._reverse ? -1 : 1;
+    const lead = STRIDE2 * (1 - SWING_DUTY2) * 0.5 * this._moving * way;
     const feet = new Array(8);
     const lifts = [0, 0, 0, 0, 0, 0, 0, 0];
-    const ch = Math.cos(this.heading);
-    const sh = Math.sin(this.heading);
-    for (const [group, offset] of [[TETRAPOD_A, 0], [TETRAPOD_B, 0.5]]) {
-      const ph = (this.gaitPhase + offset) % 1;
-      for (const i of group) {
-        const rest = this._rest(i);
-        const prev = this._prevLegPhase[i];
-        if (ph < SWING_DUTY2) {
-          if (prev >= SWING_DUTY2 || prev > ph) this._swingFrom[i] = [...this._footWorld[i]];
-          const restWorld = this._toWorld(rest);
-          const t = ph / SWING_DUTY2;
-          const tx = restWorld[0] + ch * stride * 0.5 * way;
-          const ty = restWorld[1] + sh * stride * 0.5 * way;
-          const k = smoothstep(t);
-          const from = this._swingFrom[i];
-          this._footWorld[i] = [from[0] + (tx - from[0]) * k, from[1] + (ty - from[1]) * k];
-          lifts[i] = Math.sin(Math.PI * t);
-        }
-        this._prevLegPhase[i] = ph;
-        const [fx, fy] = this._toLocal(this._footWorld[i]);
-        let [cx, cy] = this._clampToReach(i, fx, fy);
-        const dvx = cx - rest[0];
-        const dvy = cy - rest[1];
-        const dv = Math.hypot(dvx, dvy);
-        if (dv > MAX_DRAG) {
-          const k = MAX_DRAG / dv;
-          cx = rest[0] + dvx * k;
-          cy = rest[1] + dvy * k;
-        }
-        if (cx !== fx || cy !== fy) this._footWorld[i] = this._toWorld([cx, cy]);
-        feet[i] = [cx, cy];
+    for (let i = 0; i < 8; i++) {
+      const rest = this._rest(i);
+      const ph = this._legPhase[i];
+      const prev = this._prevLegPhase[i];
+      if (ph < SWING_DUTY2) {
+        if (prev >= SWING_DUTY2 || prev > ph) this._swingFrom[i] = [...this._footWorld[i]];
+        const t = ph / SWING_DUTY2;
+        const k = smoothstep(t);
+        const coxa2 = LEGS2[i][0];
+        const target = this._swingTo[i] ?? [rest[0] + lead, rest[1]];
+        const from = this._toLocal(this._swingFrom[i]);
+        const a0 = Math.atan2(from[1] - coxa2[1], from[0] - coxa2[0]);
+        const a1 = Math.atan2(target[1] - coxa2[1], target[0] - coxa2[0]);
+        const r0 = Math.hypot(from[0] - coxa2[0], from[1] - coxa2[1]);
+        const r1 = Math.hypot(target[0] - coxa2[0], target[1] - coxa2[1]);
+        const a = a0 + wrap(a1 - a0) * k;
+        const r = (r0 + (r1 - r0) * k) * (1 - 0.08 * Math.sin(Math.PI * t));
+        this._footWorld[i] = this._toWorld([coxa2[0] + r * Math.cos(a), coxa2[1] + r * Math.sin(a)]);
+        lifts[i] = Math.sin(Math.PI * t);
+      } else {
+        this._swingTo[i] = null;
+      }
+      this._prevLegPhase[i] = ph;
+      const [fx, fy] = this._toLocal(this._footWorld[i]);
+      let [cx, cy] = this._clampToReach(i, fx, fy);
+      const coxa = LEGS2[i][0];
+      const da = wrap(Math.atan2(cy - coxa[1], cx - coxa[0]) - REST_ANGLE[i]);
+      const forward = (i & 1) === 0 ? da > 0 : da < 0;
+      const limit = LEG_RANGE[i][forward ? 0 : 1];
+      if (Math.abs(da) > limit) {
+        const r = Math.hypot(cx - coxa[0], cy - coxa[1]);
+        const a = REST_ANGLE[i] + Math.sign(da) * limit;
+        cx = coxa[0] + r * Math.cos(a);
+        cy = coxa[1] + r * Math.sin(a);
+      }
+      const dvx = cx - rest[0];
+      const dvy = cy - rest[1];
+      const dv = Math.hypot(dvx, dvy);
+      if (dv > MAX_DRAG) {
+        const k = MAX_DRAG / dv;
+        cx = rest[0] + dvx * k;
+        cy = rest[1] + dvy * k;
+      }
+      if (cx !== fx || cy !== fy) this._footWorld[i] = this._toWorld([cx, cy]);
+      feet[i] = [cx, cy];
+      if (ph >= SWING_DUTY2 && (Math.abs(da) > STEP_EARLY_RANGE * limit || dv > STEP_EARLY_DRAG)) {
+        this._stepEarly.push(i);
       }
     }
     this.pose.feet = feet;
     this.pose.lift = lifts;
+    const busy = (j) => j >= 0 && j < 8 && this._legPhase[j] < SWING_DUTY2;
+    for (const i of this._stepEarly) {
+      const side = i & 1;
+      if (this._stanceT[i] < 0.1) continue;
+      let up = 0;
+      for (let j = 0; j < 8; j++) if (busy(j)) up++;
+      if (up >= 3) continue;
+      if (busy(i - 2) || busy(i + 2) || busy(i ^ 1)) continue;
+      let sideBusy = false;
+      for (let j = side; j < 8; j += 2) if (busy(j)) sideBusy = true;
+      if (sideBusy) continue;
+      this._legPhase[i] = 0;
+      this._prevLegPhase[i] = 1;
+      this._swingTo[i] = null;
+    }
+    this._stepEarly.length = 0;
+  }
+  /** Plant every foot where the pose currently shows it, so a change of state
+   * never makes all eight legs slide somewhere at once. */
+  _plantFeet() {
+    this._footWorld = this.pose.feet.map((f, i) => this._toWorld(this._clampToReach(i, f[0], f[1])));
+    this._swingFrom = this._footWorld.map((p) => [...p]);
   }
   /**
    * Small adjustments for a spider that is standing rather than walking.  Left
    * perfectly still it reads as a dead symmetric star, which is not what a
-   * watching salticid looks like: it shifts its footing and waves a front leg.
+   * watching salticid looks like: it re-foots one leg now and then, and waves
+   * a front leg.  Planted feet stay planted; they do not slide about.
    */
   _settle(dt) {
     this._idleT += dt;
     const t = this._idleT;
-    this._updateGait();
+    this._stepGait(0, this._reverse);
+    this._footingIn -= dt;
+    if (this._footingIn <= 0) {
+      this._footingIn = this.rng.uniform(0.4, 1.8);
+      const i = 2 + this.rng.randrange(6);
+      if (this._legPhase[i] >= SWING_DUTY2 && this._stanceT[i] > 0.3) {
+        const rest = this._rest(i);
+        this._swingTo[i] = [rest[0] + this.rng.gauss(0, 0.05), rest[1] + this.rng.gauss(0, 0.05)];
+        this._legPhase[i] = 0;
+        this._prevLegPhase[i] = 1;
+        this._updateGait();
+      }
+    }
     const feet = this.pose.feet;
     const lift = this.pose.lift;
-    for (let i = 0; i < 8; i++) {
-      const ph = this._idlePhase[i];
-      feet[i][0] += 0.02 * Math.sin(t * 1.7 + ph);
-      feet[i][1] += 0.024 * Math.sin(t * 1.3 + ph * 1.7);
-    }
     this._waveIn -= dt;
     if (this._wave <= 0 && this._waveIn <= 0) {
       this._wave = 1;
@@ -1422,12 +1580,41 @@ var Spider = class {
       feet[i][1] = ry + 0.1 * u * (i % 2 === 0 ? -1 : 1);
       feet[i][1] += 0.05 * Math.sin(t * 9) * u;
       lift[i] = Math.max(lift[i], u);
+      if (this._wave === 0) this._footWorld[i] = this._toWorld([rx, ry]);
     }
     for (let i = 0; i < 8; i++) feet[i] = this._clampToReach(i, feet[i][0], feet[i][1]);
+  }
+  /**
+   * The mouthparts of a spider that is not eating.  A salticid keeps its
+   * pedipalps going nearly all the time -- small alternating waggles, now
+   * quicker, now slower -- and every so often flexes its chelicerae apart and
+   * together a few times.
+   */
+  _face(dt) {
+    const p = this.pose;
+    this._faceT += dt;
+    const t = this._faceT;
+    if (this.rng.random() < 0.4 * dt) this._palpRate = this.rng.uniform(3.5, 8);
+    const swell = 0.55 + 0.45 * Math.sin(t * 0.9);
+    p.palp = swell * Math.sin(t * this._palpRate);
+    p.palpSplit = 0.35 * swell * Math.sin(t * this._palpRate * 1.7 + 1.3);
+    this._chewIn -= dt;
+    if (this._chew <= 0 && this._chewIn <= 0) {
+      this._chewLen = this._chew = this.rng.uniform(0.35, 1.1);
+      this._chewIn = this.rng.uniform(1.2, 4.5);
+    }
+    if (this._chew > 0) {
+      this._chew = Math.max(0, this._chew - dt);
+      const u = 1 - this._chew / this._chewLen;
+      p.bite = 0.32 * Math.sin(Math.PI * u) * (0.6 + 0.4 * Math.sin(u * this._chewLen * 22));
+    } else {
+      p.bite = 0;
+    }
   }
   update(dt) {
     dt = Math.min(dt, 0.05);
     this.stateT += dt;
+    this._legDt = dt;
     const p = this.pose;
     if (![POUNCE, RETREAT, SEIZE, HAUL, FEED].includes(this.state)) {
       if (this._edge()[0] > this._band()) this._enter(RETREAT);
@@ -1438,7 +1625,6 @@ var Spider = class {
     switch (this.state) {
       case LURK: {
         this.height = 0;
-        p.palp = Math.sin(this.stateT * 5) * (0.5 + 0.5 * Math.sin(this.stateT));
         this._settle(dt);
         if (fly) {
           this._track(fly.x, fly.y, dt, 2.2);
@@ -1457,7 +1643,7 @@ var Spider = class {
       case PATROL: {
         this.height = 0;
         const [tx, ty] = this._laneTarget();
-        this._walkTowards(tx, ty, dt, 3.2);
+        this._walkTowards(tx, ty, dt, 3.2, true, true);
         if (fly) this._enter(STALK);
         else if (this.stateT >= this.stateDur) this._enter(LURK);
         break;
@@ -1484,7 +1670,7 @@ var Spider = class {
           else this._freeze = Math.max(0, this._freeze - dt);
           if (this._freeze <= 0) {
             const [tx, ty] = this._laneTarget(this._laneS(fly.x, fly.y));
-            this._walkTowards(tx, ty, dt, 2.4);
+            this._walkTowards(tx, ty, dt, 2.4, true, true);
           } else {
             this._track(fly.x, fly.y, dt, 1.4);
             this._settle(dt);
@@ -1502,11 +1688,9 @@ var Spider = class {
         this.height = Math.sin(Math.PI * t) * 1.6;
         p.feet = CROUCHED.map((c) => [...c]);
         p.lift = [1, 1, 1, 1, 1, 1, 1, 1];
-        p.crouch = 1;
         const caught = fly && fly.height < 0.45 && Math.hypot(fly.x - this.x, fly.y - this.y) < CATCH_L * L;
         if (caught || t >= 1) {
           this.height = 0;
-          p.crouch = 0;
           if (caught) {
             fly.caught();
             this.carried = fly;
@@ -1528,10 +1712,9 @@ var Spider = class {
         this.height = 0;
         const [d, n] = this._edge();
         if (d > -HIDE_L * L * 0.8) {
-          this._walkTowards(this.x - n[0] * 400, this.y - n[1] * 400, dt);
+          this._walkTowards(this.x - n[0] * 400, this.y - n[1] * 400, dt, 5, true, true);
         } else {
           this._settle(dt);
-          p.palp = Math.sin(this.stateT * 4) * 0.5;
         }
         if (fly && this.stateT > 1 && this.rng.random() < 0.9 * dt) {
           this._enter(STALK);
@@ -1576,7 +1759,6 @@ var Spider = class {
         break;
       }
     }
-    if (this.state !== POUNCE) p.crouch = 0;
     if (this._blendT < 1) {
       this._blendT = Math.min(1, this._blendT + dt / BLEND_TIME2);
       const k = smoothstep(this._blendT);
@@ -1587,6 +1769,7 @@ var Spider = class {
       p.lift = p.lift.map((b, i) => this._blendLift[i] + (b - this._blendLift[i]) * k);
     }
     if (this.carried) this._updateCarried();
+    if (!MOUTH_BUSY.has(this.state)) this._face(dt);
     p.height = this.height;
     p.light = bodyLight(this.heading);
     return p;
@@ -2339,16 +2522,8 @@ function sheen(ctx, path, box, lv) {
   ctx.fill(path);
 }
 var SEGMENTS = [[0, 0.066], [1, 0.044], [2, 0.024]];
-function legJoints(idx, foot) {
-  const [coxa, , femur, tibia, tarsus, kneeSign] = LEGS2[idx];
-  const ax = foot[0] - coxa[0];
-  const ay = foot[1] - coxa[1];
-  const d = Math.hypot(ax, ay) || 1e-5;
-  const ankle = [foot[0] - ax / d * tarsus, foot[1] - ay / d * tarsus];
-  return [coxa, ik(coxa, ankle, femur, tibia, kneeSign), ankle, foot];
-}
-function drawLegs(ctx, g, feet, detail) {
-  const joints = feet.map((f, i) => legJoints(i, f));
+function drawLegs(ctx, g, feet, detail, lifts) {
+  const joints = feet.map((f, i) => legJoints(i, f, lifts[i] ?? 0));
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   const lay = (seg) => {
@@ -2400,6 +2575,14 @@ function drawLegs(ctx, g, feet, detail) {
     });
     ctx.stroke();
   }
+  ctx.fillStyle = "rgba(190,170,140,0.55)";
+  ctx.beginPath();
+  for (const j of joints) {
+    const [kx, ky] = j[1];
+    ctx.moveTo(kx + 0.026, ky);
+    ctx.arc(kx, ky, 0.026, 0, TAU3);
+  }
+  ctx.fill();
   ctx.strokeStyle = rgb(LEG_BAND);
   ctx.lineWidth = 0.026;
   ctx.beginPath();
@@ -2460,36 +2643,75 @@ function drawBody2(ctx, g, pose, detail, devScale) {
     ctx.arc(ex, ey, r * 0.22, 0, TAU3);
   }
   ctx.fill();
+  const bite = pose.bite;
   for (const sign of [-1, 1]) {
     ctx.save();
-    ctx.translate(0.4, 0.052 * sign);
-    ctx.rotate((0.12 + 0.5 * pose.bite) * sign);
+    ctx.translate(0.385, 0.036 * sign);
+    ctx.rotate((0.06 + 0.62 * bite) * sign);
     ctx.beginPath();
-    ctx.ellipse(0, 0, 0.1, 0.058, 0, 0, TAU3);
-    ctx.fillStyle = "rgb(38,29,22)";
+    ctx.ellipse(0.07, 0, 0.078, 0.044, 0, 0, TAU3);
+    ctx.fillStyle = "rgb(52,40,30)";
     ctx.fill();
-    ctx.strokeStyle = "rgba(0,0,0,0.35)";
-    ctx.lineWidth = 7e-3;
+    ctx.strokeStyle = "rgba(150,128,100,0.55)";
+    ctx.lineWidth = 9e-3;
     ctx.stroke();
-    ctx.strokeStyle = "rgb(8,6,5)";
+    const fold = (1.75 - 1.45 * bite) * -sign;
+    ctx.strokeStyle = "rgb(14,10,8)";
     ctx.lineCap = "round";
-    ctx.lineWidth = 0.024;
+    ctx.lineWidth = 0.02;
     ctx.beginPath();
-    ctx.moveTo(0.07, 0.014 * sign);
-    ctx.lineTo(0.07 + 0.095 * (0.3 + 0.7 * pose.bite), (0.014 + 0.055 * pose.bite) * sign);
+    ctx.moveTo(0.135, 8e-3 * sign);
+    ctx.lineTo(0.135 + 0.06 * Math.cos(fold), 8e-3 * sign + 0.06 * Math.sin(fold));
     ctx.stroke();
     ctx.restore();
   }
-  ctx.strokeStyle = rgb(PALP);
   ctx.lineCap = "round";
-  ctx.lineWidth = 0.055;
+  ctx.lineJoin = "round";
+  const palps = [-1, 1].map((sign) => {
+    const swing = pose.palp + sign * (pose.palpSplit || 0);
+    const a = (0.42 + 0.3 * swing) * sign;
+    const b = a + 0.35 * sign * (0.6 - 0.4 * swing);
+    const o = [0.4, 0.085 * sign];
+    const k = [o[0] + 0.075 * Math.cos(a), o[1] + 0.075 * Math.sin(a)];
+    const t = [k[0] + 0.07 * Math.cos(b), k[1] + 0.07 * Math.sin(b)];
+    return [o, k, t];
+  });
+  ctx.strokeStyle = rgb(PALP);
+  ctx.lineWidth = 0.05;
   ctx.beginPath();
-  for (const sign of [-1, 1]) {
-    const a = (0.3 + 0.18 * pose.palp) * sign;
-    const ox = 0.4;
-    const oy = 0.075 * sign;
-    ctx.moveTo(ox, oy);
-    ctx.lineTo(ox + 0.13 * Math.cos(a), oy + 0.13 * Math.sin(a));
+  for (const [o, k, t] of palps) {
+    ctx.moveTo(o[0], o[1]);
+    ctx.lineTo(k[0], k[1]);
+    ctx.lineTo(t[0], t[1]);
+  }
+  ctx.stroke();
+  ctx.strokeStyle = rgb(LEG_BAND);
+  ctx.lineWidth = 0.044;
+  ctx.beginPath();
+  for (const [, k, t] of palps) {
+    ctx.moveTo(k[0] + (t[0] - k[0]) * 0.55, k[1] + (t[1] - k[1]) * 0.55);
+    ctx.lineTo(t[0], t[1]);
+  }
+  ctx.stroke();
+}
+var LEG_SHADOW_THROW = 0.38;
+function legShadows(ctx, pose, alpha) {
+  const lv = pose.light;
+  const h = pose.height;
+  const joints = pose.feet.map((f, i) => legJoints(i, f, pose.lift[i] ?? 0).map(([x, y, z]) => {
+    const t = (z + h) * LEG_SHADOW_THROW;
+    return [x - lv[0] * t, y - lv[1] * t];
+  }));
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = `rgba(13,10,8,${alpha})`;
+  ctx.lineWidth = 0.036;
+  ctx.beginPath();
+  for (const j of joints) {
+    ctx.moveTo(j[0][0], j[0][1]);
+    ctx.lineTo(j[1][0], j[1][1]);
+    ctx.lineTo(j[2][0], j[2][1]);
+    ctx.lineTo(j[3][0], j[3][1]);
   }
   ctx.stroke();
 }
@@ -2502,6 +2724,11 @@ function drawSpiderShadow(ctx, scale, heading, pose) {
   const blur = 1 + h * 0.2;
   const alpha = 0.34 / (1 + h * 1.8) * fade;
   if (alpha < 8e-3) return;
+  ctx.save();
+  ctx.rotate(heading);
+  ctx.scale(scale, scale);
+  legShadows(ctx, pose, alpha * 0.45);
+  ctx.restore();
   ctx.save();
   ctx.translate(-light[0] * off, -light[1] * off);
   ctx.rotate(heading);
@@ -2535,7 +2762,7 @@ function drawSpider(ctx, scale, heading, pose, dpr = 1, detailMode = "auto") {
   ctx.scale(s, s);
   const devScale = scale * dpr;
   const detail = detailMode === "high" || detailMode === "auto" && devScale >= DETAIL_PX2;
-  drawLegs(ctx, g, pose.feet, detail);
+  drawLegs(ctx, g, pose.feet, detail, pose.lift);
   drawBody2(ctx, g, pose, detail, devScale);
   ctx.restore();
 }

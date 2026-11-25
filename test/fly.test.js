@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { LEGS } from '../src/fly-geometry.js';
-import { LEGS as SPIDER_LEGS } from '../src/spider-geometry.js';
+import { LEGS as SPIDER_LEGS, legJoints as spiderJoints } from '../src/spider-geometry.js';
 import { ik, buildWing } from '../src/fly-render.js';
 import { DT, fly, world, wrap } from './helpers.js';
 
@@ -41,8 +41,9 @@ test('rest knee angle looks like a leg', () => {
 });
 
 test('every knee bends away from the body', () => {
-  for (const [name, legs] of [['fly', LEGS], ['spider', SPIDER_LEGS]]) {
-    knees(legs).forEach(([coxa, knee], i) => {
+  const spider = SPIDER_LEGS.map((l, i) => [l[0], spiderJoints(i, l[1])[1]]);
+  for (const [name, k] of [['fly', knees(LEGS)], ['spider', spider]]) {
+    k.forEach(([coxa, knee], i) => {
       const lat = coxa[1] > 0 ? 1 : -1;
       assert.ok(knee[1] * lat > coxa[1] * lat, `${name} leg ${i}: knee inboard of its coxa`);
     });
@@ -50,11 +51,23 @@ test('every knee bends away from the body', () => {
 });
 
 test('neighbouring spider legs do not cross', () => {
-  const k = knees(SPIDER_LEGS);
   for (const side of [0, 1]) {
-    const xs = [side, side + 2, side + 4, side + 6].map((i) => k[i][1][0]);
+    const xs = [side, side + 2, side + 4, side + 6].map((i) => spiderJoints(i, SPIDER_LEGS[i][1])[1][0]);
     assert.deepEqual(xs, [...xs].sort((a, b) => b - a), `knee order along one side: ${xs}`);
   }
+});
+
+test('spider legs are spokes, not zig-zags', () => {
+  // A spider's knee bends upwards, so from above each leg runs nearly straight
+  // from hip to foot, and the legs fan out evenly.  Knees folded flat on the
+  // page pull neighbouring legs together into pairs.
+  SPIDER_LEGS.forEach((l, i) => {
+    const [hip, knee, , foot] = spiderJoints(i, l[1]);
+    const dx = foot[0] - hip[0], dy = foot[1] - hip[1];
+    const off = Math.abs((knee[0] - hip[0]) * dy - (knee[1] - hip[1]) * dx) / Math.hypot(dx, dy);
+    assert.ok(off < 0.1, `leg ${i}: knee ${off.toFixed(2)} body lengths off the hip-foot line`);
+    assert.ok(knee[2] > hip[2], `leg ${i}: knee not raised above the hip`);
+  });
 });
 
 test('every behaviour is reachable', () => {
