@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Myxa.js demo</title>
+<style>
+  :root { color-scheme: light; }
+  body {
+    margin: 0;
+    font: 17px/1.6 Georgia, 'Times New Roman', serif;
+    color: #2b2620;
+    background: #f4efe6;
+  }
+  main { max-width: 40rem; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
+  h1 { font-size: 2.4rem; margin: 0 0 .2rem; letter-spacing: -.01em; }
+  .lede { color: #6b5f50; margin-top: 0; }
+  code { font: 14px ui-monospace, Menlo, Consolas, monospace; background: #e9e1d3; padding: .1em .3em; border-radius: 3px; }
+  pre { background: #2b2620; color: #f4efe6; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; color: inherit; padding: 0; }
+  .try { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin: 1.2rem 0; }
+  .try input { font: inherit; padding: .35rem .5rem; border: 1px solid #b9ad99; border-radius: 4px; background: #fffdf8; }
+  .try button { font: inherit; padding: .35rem .9rem; border: 1px solid #8a7a62; border-radius: 4px; background: #e9e1d3; cursor: pointer; }
+  #clicks { color: #6b5f50; font-style: italic; }
+
+  #panel {
+    position: fixed; right: 1rem; bottom: 1rem; z-index: 10;
+    width: 15.5rem; padding: .8rem .9rem;
+    font: 13px/1.4 system-ui, sans-serif;
+    background: rgba(255, 253, 248, .94); border: 1px solid #cfc3ae; border-radius: 8px;
+    box-shadow: 0 4px 18px rgba(0,0,0,.08);
+  }
+  #panel h2 { font-size: 13px; margin: 0 0 .5rem; text-transform: uppercase; letter-spacing: .06em; color: #6b5f50; }
+  #panel label { display: grid; grid-template-columns: 6.5rem 1fr 2.4rem; align-items: center; gap: .4rem; margin: .25rem 0; }
+  #panel label.check { grid-template-columns: 1.2rem 1fr; }
+  #panel input[type=range] { min-width: 0; width: 100%; margin: 0; }
+  #panel output { text-align: right; font-variant-numeric: tabular-nums; color: #6b5f50; }
+  #panel .row { display: flex; gap: .4rem; margin-top: .6rem; }
+  #panel .row button { flex: 1; font: inherit; padding: .25rem; border: 1px solid #b9ad99; border-radius: 4px; background: #f4efe6; cursor: pointer; }
+  #stats { margin-top: .5rem; color: #6b5f50; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Myxa.js</h1>
+  <p class="lede">A house fly on your page. And something on the edges, watching it.</p>
+
+  <p>The fly walks, stops to rub its front feet together, cleans its wings with a hind
+  leg, takes off, darts across the page and lands somewhere else. Bring the pointer
+  near it and it hurries off; move at it quickly and it takes off before you get close.</p>
+
+  <p>It is drawn on a single transparent canvas over the whole page, and the canvas is
+  completely intangible: every click, scroll, selection and drag goes through to the
+  page underneath, and it never takes focus. Try it: the field and button below work
+  whether or not the fly is sitting on them.</p>
+
+  <div class="try">
+    <input id="field" placeholder="Type here while the fly walks over it">
+    <button id="btn" type="button">Click me</button>
+    <span id="clicks">no clicks yet</span>
+  </div>
+
+  <h2>Embedding</h2>
+  <p>One script tag. It follows the options panel, so what you see is what you get:</p>
+  <pre><code id="snippet-tag"></code></pre>
+  <p>or, as a module:</p>
+  <pre><code id="snippet-module"></code></pre>
+
+  <p>A jumping spider lives on the borders of the page. It does not build webs; it
+  stalks. It sits and watches, creeps along the edge towards the fly, freezes when the
+  fly moves, and leaps from about seven body lengths out. The fly ignores it creeping up
+  but bolts at the leap, and usually gets away.</p>
+
+</main>
+
+<aside id="panel">
+  <h2>Options</h2>
+  <label>flies <input type="range" id="flies" min="0" max="8" step="1" value="1"><output></output></label>
+  <label>speed <input type="range" id="speed" min="0.25" max="3" step="0.05" value="1"><output></output></label>
+  <label>fly size mm <input type="range" id="flySizeMm" min="3" max="30" step="0.5" value="7"><output></output></label>
+  <label>spider mm <input type="range" id="spiderSizeMm" min="4" max="36" step="0.5" value="9"><output></output></label>
+  <label>shyness <input type="range" id="shyness" min="0" max="3" step="0.1" value="1"><output></output></label>
+  <label>fps cap <input type="range" id="fps" min="10" max="120" step="5" value="60"><output></output></label>
+  <label class="check"><input type="checkbox" id="spider" checked> spider</label>
+  <label class="check"><input type="checkbox" id="cursor" checked> afraid of the pointer</label>
+  <label class="check"><input type="checkbox" id="shadow" checked> shadows</label>
+  <label class="check"><input type="checkbox" id="highDetail"> force high detail</label>
+  <div class="row">
+    <button type="button" id="pause">Pause</button>
+    <button type="button" id="restart">Restart</button>
+  </div>
+  <div id="stats"></div>
+</aside>
+
+<script type="module">
+  import { Myxa, DEFAULTS } from '../src/index.js';
+
+  let toy = Myxa.start({ ignoreReducedMotion: true });
+  window.toy = toy;
+
+  const numeric = ['flies', 'speed', 'flySizeMm', 'spiderSizeMm', 'shyness', 'fps'];
+  for (const id of numeric) {
+    const input = document.getElementById(id);
+    const out = input.parentElement.querySelector('output');
+    const show = () => { out.textContent = input.value; };
+    show();
+    input.addEventListener('input', () => { show(); toy.set({ [id]: Number(input.value) }); });
+  }
+  for (const id of ['spider', 'cursor', 'shadow']) {
+    const input = document.getElementById(id);
+    input.addEventListener('change', () => toy.set({ [id]: input.checked }));
+  }
+  document.getElementById('highDetail').addEventListener('change', (e) => {
+    toy.set({ detail: e.target.checked ? 'high' : 'auto' });
+  });
+  document.getElementById('pause').addEventListener('click', (e) => {
+    if (toy.paused) { toy.resume(); e.target.textContent = 'Pause'; }
+    else { toy.pause(); e.target.textContent = 'Resume'; }
+  });
+  document.getElementById('restart').addEventListener('click', () => {
+    const opts = { ...toy.options };
+    toy.stop();
+    toy = window.toy = Myxa.start(opts);
+    document.getElementById('pause').textContent = 'Pause';
+  });
+
+  // The embedding snippets, kept in step with the panel: only options that
+  // differ from the defaults are spelled out.
+  const SHOWN = ['flies', 'speed', 'flySizeMm', 'spiderSizeMm', 'shyness', 'fps', 'spider', 'cursor', 'shadow', 'detail'];
+  const kebab = (k) => k.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase());
+  const scriptUrl = new URL('../dist/myxa.min.js', location.href).href;
+  const moduleUrl = new URL('../dist/myxa.esm.js', location.href).href;
+  function changed() {
+    return SHOWN.filter((k) => toy.options[k] !== DEFAULTS[k]).map((k) => [k, toy.options[k]]);
+  }
+  function updateSnippets() {
+    const opts = changed();
+    const attrs = opts.map(([k, v]) => ` data-${kebab(k)}="${v}"`).join('');
+    document.getElementById('snippet-tag').textContent =
+      `<script src="${scriptUrl}" data-autostart${attrs}><\/script>`;
+    const literal = opts.length ? `{ ${opts.map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(', ')} }` : '';
+    document.getElementById('snippet-module').textContent =
+      `import { Myxa } from '${moduleUrl}';\n\nconst toy = Myxa.start(${literal});\n// later: toy.set({ speed: 2 }); toy.stop();`;
+  }
+  document.getElementById('panel').addEventListener('input', updateSnippets);
+  document.getElementById('panel').addEventListener('change', updateSnippets);
+  updateSnippets();
+
+  let clicks = 0;
+  document.getElementById('btn').addEventListener('click', () => {
+    clicks += 1;
+    document.getElementById('clicks').textContent = `${clicks} click${clicks === 1 ? '' : 's'} received`;
+  });
+
+  // Rough cost of a frame: time spent in tick + draw, averaged.
+  const stats = document.getElementById('stats');
+  let acc = 0, n = 0;
+  const wrap = (t) => {
+    const tick = t.tick.bind(t), draw = t.draw.bind(t);
+    t.tick = (dt) => { const a = performance.now(); tick(dt); draw(); acc += performance.now() - a; n += 1; };
+    t.draw = () => {};
+  };
+  wrap(toy);
+  document.getElementById('restart').addEventListener('click', () => wrap(toy));
+  setInterval(() => {
+    if (!n) return;
+    const fly = toy.flies[0];
+    stats.textContent = `${(acc / n).toFixed(2)} ms/frame · fly: ${fly ? (fly.hidden ? 'caught' : fly.state) : '–'} · spider: ${toy.spider ? toy.spider.state : '–'}`;
+    acc = 0; n = 0;
+  }, 1000);
+</script>
+</body>
+</html>

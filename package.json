@@ -1,0 +1,44 @@
+{
+  "name": "myxa",
+  "version": "0.1.0",
+  "description": "A realistic house fly that walks, grooms and flies over your web page, hunted by a jumping spider from the edges",
+  "type": "module",
+  "main": "dist/myxa.esm.js",
+  "module": "dist/myxa.esm.js",
+  "browser": "dist/myxa.min.js",
+  "exports": {
+    ".": "./dist/myxa.esm.js",
+    "./src": "./src/index.js"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "esbuild src/index.js --bundle --format=esm --outfile=dist/myxa.esm.js && esbuild src/browser.js --bundle --format=iife --minify --outfile=dist/myxa.min.js",
+    "test": "node --test test/",
+    "demo": "python3 -m http.server 8000",
+    "check:browser": "node test/browser-check.mjs"
+  },
+  "keywords": [
+    "fly",
+    "insect",
+    "toy",
+    "overlay",
+    "canvas",
+    "spider",
+    "animation"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  },
+  "homepage": "https://hnatt.github.io/myxajs/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hnatt/myxajs.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hnatt/myxajs/issues"
+  }
+}

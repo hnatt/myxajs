@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Myxa.js gallery</title>
+<style>body{margin:0;background:#ece6da;font:13px system-ui,sans-serif;color:#555}canvas{display:block}</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script type="module">
+  // Large still frames of both animals in several poses, for checking the
+  // drawing by eye.
+  import { Fly, Spider, World, Random, drawFly, drawFlyShadow, drawSpider, drawSpiderShadow } from '../src/index.js';
+
+  const W = 1280, H = 720, dpr = window.devicePixelRatio || 1;
+  const c = document.getElementById('c');
+  c.width = W * dpr; c.height = H * dpr; c.style.width = W + 'px'; c.style.height = H + 'px';
+  const ctx = c.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const world = new World(4000, 4000);
+  function flyIn(state, t, seed = 3) {
+    const f = new Fly(world, new Random(seed));
+    f.x = f.y = 2000;
+    f._enter(state);
+    f.stateDur = 1e9;
+    f.cursorFear = false;
+    if (state === 'flight') f.height = f.cruiseHeight = 2.2;
+    for (let i = 0; i < t * 60; i++) f.update(1 / 60);
+    return f;
+  }
+  const poses = [['walk', 0.9], ['groom_front', 0.6], ['groom_hind', 0.4], ['groom_wing', 0.5], ['idle', 0.3], ['flight', 0.4]];
+  const L = 150;
+  poses.forEach(([state, t], i) => {
+    const f = flyIn(state, t);
+    const x = 120 + (i % 3) * 230, y = 130 + Math.floor(i / 3) * 260;
+    ctx.save(); ctx.translate(x, y);
+    drawFlyShadow(ctx, L, -Math.PI / 2, f.pose);
+    drawFly(ctx, L, -Math.PI / 2, f.pose, dpr);
+    ctx.restore();
+    ctx.fillText(state, x - 30, y + 115);
+  });
+
+  const s = new Spider(world, [], new Random(5));
+  s.x = s.y = 2000;
+  for (let i = 0; i < 90; i++) s.update(1 / 60);
+  ctx.save(); ctx.translate(1000, 200);
+  drawSpiderShadow(ctx, 170, -Math.PI / 2, s.pose);
+  drawSpider(ctx, 170, -Math.PI / 2, s.pose, dpr);
+  ctx.restore();
+  ctx.fillText('spider, ' + s.state, 960, 360);
+
+  // Small, at real size, the way a page will mostly show them.
+  for (const [i, lod] of [[0, 'auto'], [1, 'high']]) {
+    const f = flyIn('walk', 0.5);
+    ctx.save(); ctx.translate(900 + i * 80, 560);
+    drawFlyShadow(ctx, 26, -0.6, f.pose);
+    drawFly(ctx, 26, -0.6, f.pose, dpr, lod);
+    ctx.restore();
+    ctx.save(); ctx.translate(900 + i * 80, 640);
+    drawSpider(ctx, 34, -0.6, s.pose, dpr, lod);
+    ctx.restore();
+    ctx.fillText(lod, 890 + i * 80, 700);
+  }
+  document.title += ' (ready)';
+</script>
+</body>
+</html>
