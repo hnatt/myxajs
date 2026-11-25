@@ -55,7 +55,15 @@ try {
   await send('Runtime.enable');
   await send('Page.enable');
   await send('Page.navigate', { url });
-  await sleep(1500);
+  // Wait for the toy itself rather than a fixed time: over the network the
+  // demo's modules can take a few seconds to arrive.
+  for (let i = 0; i < 100; i++) {
+    await sleep(100);
+    try {
+      if (await evaluate(`!!(window.toy && window.toy.running && document.querySelector('canvas'))`)) break;
+    } catch { /* page still loading */ }
+  }
+  await sleep(300);
 
   const canvas = await evaluate(`(() => { const c = document.querySelector('canvas');
     const s = getComputedStyle(c);
@@ -131,7 +139,12 @@ try {
   // The one-tag build, and respect for prefers-reduced-motion.
   const base = new URL('.', url).href;
   await send('Page.navigate', { url: `${base}script-tag.html` });
-  await sleep(1200);
+  for (let i = 0; i < 100; i++) {
+    await sleep(100);
+    try {
+      if (await evaluate(`!!(window.myxa && document.querySelector('canvas'))`)) break;
+    } catch { /* page still loading */ }
+  }
   const tag = await evaluate(`[typeof Myxa, myxa.running, myxa.flies.length, document.querySelectorAll('canvas').length]`);
   check('the script tag autostarts with data-attribute options', tag[0] === 'function' && tag[1] && tag[2] === 2 && tag[3] === 1, JSON.stringify(tag));
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
