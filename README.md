@@ -5,7 +5,9 @@
 A house fly walks around on your web page. It wanders, stops to rub its front
 feet together, cleans its wings with a hind leg, takes off, darts across the
 page and lands somewhere else. Bring the pointer near it and it hurries off;
-move at it quickly and it takes off before you get close.
+move at it quickly and it takes off before you get close. Now and then it
+leaves a dropping, which stays on the page until you rub it off with the
+pointer.
 
 And a jumping spider hunts it from the edges of the page.
 
@@ -49,9 +51,11 @@ toy.set({ speed: 1.5 });           // change options while it runs
 toy.pause();                       // freeze in place
 toy.resume();
 toy.stop();                        // remove the canvas and every listener
+toy.clearDroppings();              // rub off every dropping at once
 
 toy.running;                       // false before start, after stop, or if reduced motion stopped it
 toy.reducedMotion;                 // true if it declined to start because of prefers-reduced-motion
+toy.droppings.count;               // how many droppings are on the page
 ```
 
 `set` applies at once to every option except `canvas`, `container` and `seed`,
@@ -71,6 +75,9 @@ which only take effect on a fresh `start`.
 | `behaviour` | see below | what a fly on the ground does next, as relative weights |
 | `stray` | `true` | a walking fly may wander part-way off the edge of the page |
 | `excursions` | `true` | a flying fly now and then leaves the page for a moment |
+| `droppings` | `true` | flies leave droppings, which stay until the pointer rubs them off; `false` also clears any there are |
+| `droppingInterval` | `[20, 90]` | seconds a fly spends on the ground between droppings |
+| `maxDroppings` | `200` | most droppings kept at once; past this the oldest go |
 | `respawnDelay` | `[10, 60]` | seconds before a new fly turns up after one is eaten |
 | `shadow` | `true` | soft contact shadows |
 | `fps` | `60` | frame-rate cap; 30 halves the cost, 0 removes the cap |
@@ -113,6 +120,8 @@ Sizes are in real millimetres, so a 7 mm fly is about 26 CSS pixels long.
   wing veins, speckle) is skipped when it would be smaller than a pixel.
   Animation stops while the tab is hidden. In headless Chromium with software
   rasterisation, three flies and the spider together take 1–2 ms a frame.
+  Droppings are kept on an offscreen layer that is redrawn only where a mark
+  is dropped or rubbed, so they cost almost nothing per frame.
   A GPU-backed canvas costs less.
 
 ## Behaviour
@@ -156,6 +165,16 @@ distance:
 * in the air it veers away, and it will not land next to the pointer.
 
 `shyness` scales all of these distances; `cursor: false` turns the fear off.
+
+**Droppings.** House flies leave two kinds of mark. Fly specks are faeces:
+dark, round, slightly raised dots half a millimetre to a millimetre across.
+Now and then there is a paler, larger spot of regurgitate, which dries with a
+darker rim. A fly drops one every minute or so of ground time, from the tip of
+its abdomen, and only while it stands still. The marks stay where they fall
+until the pointer rubs them. Each pass drags part of a mark into a streak in
+the direction of the rub, and later passes thin the streaks. One quick pass
+smudges a speck, and a few strokes back and forth clean it off. The pointer
+rubs as a fingertip about 4 mm across, and resting it on a mark does nothing.
 
 ### The spider
 
@@ -243,6 +262,8 @@ the fly, focus is never taken, and the frame cost stays low.
 | `src/fly-render.js` | the fly, drawn in Canvas 2D |
 | `src/spider.js` | the spider's edge patrol, stalk, pounce and capture |
 | `src/spider-render.js` | the spider, with cached fur |
+| `src/droppings.js` | droppings, and how the pointer smudges and wipes them |
+| `src/droppings-render.js` | droppings drawn, and the offscreen layer that keeps them |
 | `src/overlay.js` | the click-through canvas and dirty-rect clearing |
 | `src/pointer.js` | passive pointer tracking |
 | `src/myxa.js` | options, animation loop and public API |

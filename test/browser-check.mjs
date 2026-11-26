@@ -115,8 +115,29 @@ try {
   const scurry = await evaluate(`[toy.flies[0].state, toy.flies[0]._fleeT > 0 || toy.flies[0].state !== 'idle']`);
   check('a pointer parked 15 mm away makes it walk off', scurry[1], scurry[0]);
 
+  // Droppings stay on the canvas until the pointer rubs them off.
+  await evaluate(`(() => { const f = toy.flies[0]; f.x = 1100; f.y = 150; f._enter('idle'); f.stateDur = 30;
+    toy.set({ cursor: false }); toy.droppings.add(300, 500, f.length); })()`);
+  await sleep(150);
+  const pixel = `(() => { const c = toy.overlay.canvas, d = toy.overlay.dpr;
+    return c.getContext('2d').getImageData(Math.round(300 * d), Math.round(500 * d), 1, 1).data[3]; })()`;
+  const inked = await evaluate(pixel);
+  await mouse('mouseMoved', 260, 500);
+  let strokes = 0;
+  for (; strokes < 16 && await evaluate('toy.droppings.count'); strokes++) {
+    for (let x = 260; x <= 340; x += 8) await mouse('mouseMoved', strokes % 2 ? 600 - x : x, 500);
+    await sleep(40);
+  }
+  await sleep(100);
+  const cleaned = await evaluate(pixel);
+  check('a dropping shows, and a few strokes rub it off', inked > 100 && cleaned === 0,
+    `alpha ${inked} -> ${cleaned} after ${strokes} strokes`);
+  await evaluate(`toy.set({ cursor: true })`);
+
   // Cost of a frame with everything on, measured in-page.
-  await evaluate(`toy.set({ spider: true, flies: 3, cursor: true })`);
+  await evaluate(`(() => { toy.set({ spider: true, flies: 3, cursor: true });
+    // Some droppings about, so the frame cost includes restoring them.
+    for (let i = 0; i < 40; i++) toy.droppings.add(40 + (i * 97) % 1200, 40 + (i * 53) % 600, 26); })()`);
   await mouse('mouseMoved', 5, 5);
   const cost = await evaluate(`new Promise((res) => {
     const t = toy, tick = t.tick.bind(t), draw = t.draw.bind(t);

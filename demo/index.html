@@ -73,6 +73,10 @@
   leg, takes off, darts across the page and lands somewhere else. Bring the pointer
   near it and it hurries off; move at it quickly and it takes off before you get close.</p>
 
+  <p>Leave it long enough and it leaves its mark: little dark specks, now and then a
+  paler spot. They stay until you rub them off with the pointer, which smudges them
+  first, the way it would with a finger.</p>
+
   <p>It is drawn on a single transparent canvas over the whole page, and the canvas is
   completely intangible: every click, scroll, selection and drag goes through to the
   page underneath, and it never takes focus. Try it: the field and button below work
@@ -98,7 +102,8 @@
   <h2>Under the lens</h2>
   <p>A small arena of its own, with its own fly and spider. The camera rides on one of
   them, so the animal stays in the middle of the box and the ground moves under it. Slow
-  time down to see the legs at work.</p>
+  time down to see the legs at work. Rub the droppings here with the pointer to watch
+  them smudge.</p>
 
   <figure id="lens">
     <canvas id="lens-canvas"></canvas>
@@ -171,6 +176,7 @@
   <label class="check"><input type="checkbox" id="spider" checked> spider</label>
   <label class="check"><input type="checkbox" id="cursor" checked> afraid of the pointer</label>
   <label class="check"><input type="checkbox" id="shadow" checked> shadows</label>
+  <label class="check"><input type="checkbox" id="droppings" checked> droppings</label>
   <label class="check"><input type="checkbox" id="highDetail"> force high detail</label>
   <div class="row">
     <button type="button" id="pause">Pause</button>
@@ -194,7 +200,7 @@
     show();
     input.addEventListener('input', () => { show(); toy.set({ [id]: Number(input.value) }); });
   }
-  for (const id of ['spider', 'cursor', 'shadow']) {
+  for (const id of ['spider', 'cursor', 'shadow', 'droppings']) {
     const input = document.getElementById(id);
     input.addEventListener('change', () => toy.set({ [id]: input.checked }));
   }
@@ -214,7 +220,7 @@
 
   // The embedding snippets, kept in step with the panel: only options that
   // differ from the defaults are spelled out.
-  const SHOWN = ['flies', 'speed', 'flySizeMm', 'spiderSizeMm', 'shyness', 'fps', 'spider', 'cursor', 'shadow', 'detail'];
+  const SHOWN = ['flies', 'speed', 'flySizeMm', 'spiderSizeMm', 'shyness', 'fps', 'spider', 'cursor', 'shadow', 'droppings', 'detail'];
   const kebab = (k) => k.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase());
   const scriptUrl = new URL('../dist/myxa.min.js', location.href).href;
   const moduleUrl = new URL('../dist/myxa.esm.js', location.href).href;
@@ -295,7 +301,8 @@
   setInterval(() => {
     if (!n) return;
     const fly = toy.flies[0];
-    stats.textContent = `${(acc / n).toFixed(2)} ms/frame · fly: ${fly ? (fly.hidden ? 'caught' : fly.state) : '–'} · spider: ${toy.spider ? toy.spider.state : '–'}`;
+    const specks = toy.droppings ? toy.droppings.count : 0;
+    stats.textContent = `${(acc / n).toFixed(2)} ms/frame · fly: ${fly ? (fly.hidden ? 'caught' : fly.state) : '–'} · spider: ${toy.spider ? toy.spider.state : '–'} · droppings: ${specks}`;
     acc = 0; n = 0;
   }, 1000);
 </script>

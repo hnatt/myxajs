@@ -48,6 +48,9 @@ export class Overlay {
     this.height = 0;
     this.dpr = 1;
     this._dirty = [];
+    /** An offscreen canvas of the same size, restored into every cleared
+     * box: what is drawn on it stays put under the animals. */
+    this.underlay = null;
     this._onResize = () => this.resize();
     if (typeof ResizeObserver !== 'undefined') {
       this._ro = new ResizeObserver(this._onResize);
@@ -92,7 +95,9 @@ export class Overlay {
       const ay = Math.max(0, Math.floor(y0 * dpr));
       const bx = Math.min(this.canvas.width, Math.ceil(x1 * dpr));
       const by = Math.min(this.canvas.height, Math.ceil(y1 * dpr));
-      if (bx > ax && by > ay) ctx.clearRect(ax, ay, bx - ax, by - ay);
+      if (bx <= ax || by <= ay) continue;
+      ctx.clearRect(ax, ay, bx - ax, by - ay);
+      if (this.underlay) ctx.drawImage(this.underlay, ax, ay, bx - ax, by - ay, ax, ay, bx - ax, by - ay);
     }
     this._dirty = [];
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -105,6 +110,13 @@ export class Overlay {
     if (x1 < 0 || y1 < 0 || x0 > this.width || y0 > this.height) return false;
     this._dirty.push([x0 - 1, y0 - 1, x1 + 1, y1 + 1]);
     return true;
+  }
+
+  /** Have the next frame clear this box (CSS px) and restore the underlay
+   * there, after something on the underlay changed. */
+  invalidate(x0, y0, x1, y1) {
+    if (x1 < 0 || y1 < 0 || x0 > this.width || y0 > this.height) return;
+    this._dirty.push([x0 - 1, y0 - 1, x1 + 1, y1 + 1]);
   }
 
   clearAll() {

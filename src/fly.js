@@ -129,6 +129,8 @@ export class Fly {
     this.cursorFear = opts.cursor ?? true;
     this.stray = opts.stray ?? true;
     this.excursions = opts.excursions ?? true;
+    /** Seconds on the ground between droppings, [min, max]; null for none. */
+    this.droppingInterval = opts.droppingInterval ?? null;
     this.setBehaviour(opts.behaviour);
 
     this.x = world.x + world.width * 0.5;
@@ -152,6 +154,9 @@ export class Fly {
 
     this.pose = makePose();
     this._wingOpenTarget = [0, 0];
+    this._dropIn = null; // seconds of ground time until the next dropping
+    /** Droppings left since the owner last emptied this: [x, y] in CSS px. */
+    this.drops = [];
     this._act = null;
     this.groomAct = null; // the grooming act under way, for anyone watching
     this.groomSide = 0;
@@ -942,6 +947,22 @@ export class Fly {
     if (pose.wingSpread < 0.01) pose.wingSpread = 0;
   }
 
+  /**
+   * Flies defecate often, and mostly while they sit.  The clock runs only on
+   * the ground; when it is due the fly waits until it is standing still and
+   * leaves a speck at the tip of the abdomen.
+   */
+  _digest(dt) {
+    const iv = this.droppingInterval;
+    if (!iv || this.hidden || AIRBORNE.has(this.state)) return;
+    if (this._dropIn === null) this._dropIn = this.rng.uniform(iv[0], iv[1]);
+    this._dropIn -= dt;
+    if (this._dropIn > 0 || this.state === WALK) return;
+    this._dropIn = null;
+    const tip = 0.47 * this.length;
+    this.drops.push([this.x - Math.cos(this.heading) * tip, this.y - Math.sin(this.heading) * tip]);
+  }
+
   // -- main tick --------------------------------------------------------
   update(dt) {
     dt = Math.min(dt, 0.05);
@@ -1024,6 +1045,7 @@ export class Fly {
     this._justEntered = false;
 
     if (targetLift) p.lift = targetLift;
+    this._digest(dt);
     // A wing let go by the grooming leg springs back, not snaps.
     const kw = Math.min(1, 24 * dt);
     p.wingOpen[0] += (wingOpen[0] - p.wingOpen[0]) * kw;

@@ -8,6 +8,8 @@
 //               turns under it.
 
 import { World, Fly, Spider, Random, DEFAULT_BEHAVIOUR, drawFly, drawFlyShadow, drawSpider, drawSpiderShadow } from '../src/index.js';
+import { Droppings, WIPE_RADIUS_MM } from '../src/droppings.js';
+import { drawDropping } from '../src/droppings-render.js';
 
 const ARENA_W = 640; // CSS px: a small page, so the two meet often
 const ARENA_H = 400;
@@ -73,7 +75,9 @@ export class Inspector {
 
     this.rng = new Random();
     this.world = new World(ARENA_W, ARENA_H);
-    this.flies = [new Fly(this.world, this.rng, { cursor: false })];
+    // More often than on the page, so there is something to look at.
+    this.flies = [new Fly(this.world, this.rng, { cursor: false, droppingInterval: [8, 30] })];
+    this.droppings = new Droppings(this.rng);
     this.spider = null;
     this.setSpider(true);
 
@@ -83,6 +87,11 @@ export class Inspector {
     this._last = null;
     this._visible = true;
     this._frame = this._frame.bind(this);
+
+    // Rub droppings off with the pointer, as on the page.
+    this._rubFrom = null;
+    canvas.addEventListener('pointermove', (e) => this._rub(e), { passive: true });
+    canvas.addEventListener('pointerleave', () => { this._rubFrom = null; }, { passive: true });
 
     new ResizeObserver(() => this._resize()).observe(canvas);
     this._resize();
@@ -180,6 +189,26 @@ export class Inspector {
 
   // -- internals --------------------------------------------------------
 
+  /** Screen point in the box to arena coordinates, through the camera. */
+  _toArena(sx, sy) {
+    const [cx, cy, rot] = this._cam ?? [ARENA_W / 2, ARENA_H / 2, 0];
+    const dx = (sx - this.w / 2) / this.zoom;
+    const dy = (sy - this.h / 2) / this.zoom;
+    const c = Math.cos(rot);
+    const s = Math.sin(rot);
+    return [cx + dx * c - dy * s, cy + dx * s + dy * c];
+  }
+
+  _rub(e) {
+    const r = this.canvas.getBoundingClientRect();
+    const p = this._toArena(e.clientX - r.left, e.clientY - r.top);
+    if (this._rubFrom) {
+      const radius = WIPE_RADIUS_MM * this.world.pxPerMm;
+      if (this.droppings.wipe(this._rubFrom[0], this._rubFrom[1], p[0], p[1], radius) && this.paused) this._draw();
+    }
+    this._rubFrom = p;
+  }
+
   _kick() {
     if (!this._raf && this._visible) this._raf = requestAnimationFrame(this._frame);
   }
@@ -210,6 +239,8 @@ export class Inspector {
       fly.senseCursor(null, dt);
       const was = fly.state;
       fly.update(dt);
+      for (const [x, y] of fly.drops) this.droppings.add(x, y, fly.length);
+      fly.drops.length = 0;
       if (was === 'landing' && fly.state !== 'landing' && this._wantState && fly === this.fly) {
         fly._enter(this._wantState);
       }
@@ -293,6 +324,8 @@ export class Inspector {
     ctx.rotate(-rot);
     ctx.translate(-cx, -cy);
     this._drawGround(ctx, cx, cy);
+    for (const d of this.droppings.list) drawDropping(ctx, d, zoom * dpr);
+    this.droppings.changed.length = 0;
     this._drawTrail(ctx);
     ctx.restore();
 

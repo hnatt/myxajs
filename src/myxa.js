@@ -8,6 +8,8 @@ import { Overlay } from './overlay.js';
 import { Pointer } from './pointer.js';
 import { drawFly, drawFlyShadow } from './fly-render.js';
 import { drawSpider, drawSpiderShadow, clearCaches } from './spider-render.js';
+import { Droppings, WIPE_RADIUS_MM } from './droppings.js';
+import { StainLayer } from './droppings-render.js';
 
 export const DEFAULTS = Object.freeze({
   /** How many flies. */
@@ -38,6 +40,12 @@ export const DEFAULTS = Object.freeze({
   stray: true,
   /** Let a flying fly now and then leave the page for a moment. */
   excursions: true,
+  /** Flies leave droppings, which stay until the pointer rubs them off. */
+  droppings: true,
+  /** Seconds a fly spends on the ground between droppings: [min, max]. */
+  droppingInterval: [20, 90],
+  /** Most droppings kept at once; past this the oldest go. */
+  maxDroppings: 200,
   /** Seconds before a new fly turns up after the spider eats one: [min, max]. */
   respawnDelay: RESPAWN_DELAY,
   /** CSS pixels per millimetre.  96 dpi is the CSS reference. */
@@ -93,8 +101,19 @@ export class Myxa {
     this.rng = new Random(o.seed);
     this.overlay = new Overlay(o);
     this.world = new World(this.overlay.width, this.overlay.height, o.pxPerMm);
-    this.overlay.onresize = (w, h) => this.world.resize(w, h);
+    this.droppings = new Droppings(this.rng, o.maxDroppings);
+    this.stains = new StainLayer();
+    this.stains.resize(this.overlay.width, this.overlay.height, this.overlay.dpr, []);
+    this.overlay.onresize = (w, h) => {
+      this.world.resize(w, h);
+      // A resize blanks both canvases: draw the marks again, and put the
+      // whole layer back on the next frame.
+      this.stains.resize(w, h, this.overlay.dpr, this.droppings.list);
+      this.droppings.changed = [];
+      this.overlay.invalidate(0, 0, w, h);
+    };
     this.pointer = new Pointer();
+    this._wipeFrom = null;
     this._syncPopulation();
     this.running = true;
     this.paused = false;
@@ -113,6 +132,8 @@ export class Myxa {
     clearCaches();
     this.flies = [];
     this.spider = null;
+    this.droppings = null;
+    this.stains = null;
     this.running = false;
     return this;
   }
@@ -147,6 +168,8 @@ export class Myxa {
       this.overlay.resize();
     }
     if (options.pxPerMm !== undefined) this.world.pxPerMm = o.pxPerMm;
+    if (options.maxDroppings !== undefined) this.droppings.max = o.maxDroppings;
+    if (options.droppings === false) this.clearDroppings();
     for (const fly of this.flies) this._configureFly(fly);
     this._syncPopulation();
     if (this.spider) this._configureSpider(this.spider);
@@ -164,6 +187,7 @@ export class Myxa {
       stray: o.stray,
       excursions: o.excursions,
       behaviour: o.behaviour,
+      droppingInterval: o.droppings ? o.droppingInterval : null,
     };
   }
 
@@ -175,6 +199,7 @@ export class Myxa {
     fly.cursorFear = f.cursor;
     fly.stray = f.stray;
     fly.excursions = f.excursions;
+    fly.droppingInterval = f.droppingInterval;
     fly.setBehaviour(f.behaviour);
   }
 
@@ -245,6 +270,49 @@ export class Myxa {
       fly.update(dt);
     }
     if (sp) sp.update(dt);
+    this._updateDroppings(cursor);
+  }
+
+  /** Rub off every dropping at once. */
+  clearDroppings() {
+    if (this.droppings) {
+      this.droppings.clear();
+      this._flushStains();
+    }
+    return this;
+  }
+
+  /** Collect what the flies left, and let the pointer rub marks off. */
+  _updateDroppings(cursor) {
+    const d = this.droppings;
+    if (!d) return;
+    const w = this.world;
+    for (const fly of this.flies) {
+      for (const [x, y] of fly.drops) {
+        if (w.contains(x, y)) d.add(x, y, fly.length);
+      }
+      fly.drops.length = 0;
+    }
+    if (cursor && this._wipeFrom) {
+      const [ax, ay] = this._wipeFrom;
+      d.wipe(ax, ay, cursor[0], cursor[1], WIPE_RADIUS_MM * w.pxPerMm);
+    }
+    this._wipeFrom = cursor;
+    this._flushStains();
+  }
+
+
+  /** Redraw the changed parts of the stain layer and have them shown. */
+  _flushStains() {
+    const d = this.droppings;
+    if (!d.changed.length || !this.stains) return;
+    for (const box of d.changed) {
+      this.stains.redraw(box, d.list);
+      this.overlay.invalidate(...box);
+    }
+    d.changed = [];
+    // With nothing on the layer there is nothing to restore.
+    this.overlay.underlay = d.count ? this.stains.canvas : null;
   }
 
   draw() {

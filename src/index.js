@@ -7,5 +7,7 @@ export { World } from './world.js';
 export { Random } from './random.js';
 export { drawFly, drawFlyShadow } from './fly-render.js';
 export { drawSpider, drawSpiderShadow } from './spider-render.js';
+export { Droppings } from './droppings.js';
+export { drawDropping } from './droppings-render.js';
 
 export { Myxa as default } from './myxa.js';

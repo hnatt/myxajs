@@ -244,6 +244,7 @@ var Fly = class {
     this.cursorFear = opts.cursor ?? true;
     this.stray = opts.stray ?? true;
     this.excursions = opts.excursions ?? true;
+    this.droppingInterval = opts.droppingInterval ?? null;
     this.setBehaviour(opts.behaviour);
     this.x = world.x + world.width * 0.5;
     this.y = world.y + world.height * 0.5;
@@ -261,6 +262,8 @@ var Fly = class {
     this._prevLegPhase = [0, 0, 0, 0, 0, 0];
     this.pose = makePose();
     this._wingOpenTarget = [0, 0];
+    this._dropIn = null;
+    this.drops = [];
     this._act = null;
     this.groomAct = null;
     this.groomSide = 0;
@@ -948,6 +951,21 @@ var Fly = class {
     if (pose.wingBlur < 0.01) pose.wingBlur = 0;
     if (pose.wingSpread < 0.01) pose.wingSpread = 0;
   }
+  /**
+   * Flies defecate often, and mostly while they sit.  The clock runs only on
+   * the ground; when it is due the fly waits until it is standing still and
+   * leaves a speck at the tip of the abdomen.
+   */
+  _digest(dt) {
+    const iv = this.droppingInterval;
+    if (!iv || this.hidden || AIRBORNE.has(this.state)) return;
+    if (this._dropIn === null) this._dropIn = this.rng.uniform(iv[0], iv[1]);
+    this._dropIn -= dt;
+    if (this._dropIn > 0 || this.state === WALK) return;
+    this._dropIn = null;
+    const tip = 0.47 * this.length;
+    this.drops.push([this.x - Math.cos(this.heading) * tip, this.y - Math.sin(this.heading) * tip]);
+  }
   // -- main tick --------------------------------------------------------
   update(dt) {
     dt = Math.min(dt, 0.05);
@@ -1022,6 +1040,7 @@ var Fly = class {
     }
     this._justEntered = false;
     if (targetLift) p.lift = targetLift;
+    this._digest(dt);
     const kw = Math.min(1, 24 * dt);
     p.wingOpen[0] += (wingOpen[0] - p.wingOpen[0]) * kw;
     p.wingOpen[1] += (wingOpen[1] - p.wingOpen[1]) * kw;
@@ -1949,6 +1968,7 @@ var Overlay = class {
     this.height = 0;
     this.dpr = 1;
     this._dirty = [];
+    this.underlay = null;
     this._onResize = () => this.resize();
     if (typeof ResizeObserver !== "undefined") {
       this._ro = new ResizeObserver(this._onResize);
@@ -1990,7 +2010,9 @@ var Overlay = class {
       const ay = Math.max(0, Math.floor(y0 * dpr));
       const bx = Math.min(this.canvas.width, Math.ceil(x1 * dpr));
       const by = Math.min(this.canvas.height, Math.ceil(y1 * dpr));
-      if (bx > ax && by > ay) ctx.clearRect(ax, ay, bx - ax, by - ay);
+      if (bx <= ax || by <= ay) continue;
+      ctx.clearRect(ax, ay, bx - ax, by - ay);
+      if (this.underlay) ctx.drawImage(this.underlay, ax, ay, bx - ax, by - ay, ax, ay, bx - ax, by - ay);
     }
     this._dirty = [];
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -2002,6 +2024,12 @@ var Overlay = class {
     if (x1 < 0 || y1 < 0 || x0 > this.width || y0 > this.height) return false;
     this._dirty.push([x0 - 1, y0 - 1, x1 + 1, y1 + 1]);
     return true;
+  }
+  /** Have the next frame clear this box (CSS px) and restore the underlay
+   * there, after something on the underlay changed. */
+  invalidate(x0, y0, x1, y1) {
+    if (x1 < 0 || y1 < 0 || x0 > this.width || y0 > this.height) return;
+    this._dirty.push([x0 - 1, y0 - 1, x1 + 1, y1 + 1]);
   }
   clearAll() {
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -2904,6 +2932,266 @@ function clearCaches() {
   hairCache.clear();
 }
 
+// src/droppings.js
+var WIPE_RADIUS_MM = 2.2;
+var PALE_CHANCE = 0.15;
+var DRAG = 0.6;
+var THIN = 0.45;
+var MAX_SMEARS = 5;
+var GONE = 0.05;
+var Droppings = class {
+  /**
+   * @param {import('./random.js').Random} rng
+   * @param {number} max  oldest marks go once there are more than this
+   */
+  constructor(rng, max = 200) {
+    this.rng = rng;
+    this.max = max;
+    this.list = [];
+    this.changed = [];
+  }
+  get count() {
+    return this.list.length;
+  }
+  /** A fresh mark at (x, y), left by a fly `flyLen` px long. */
+  add(x, y, flyLen) {
+    const rng = this.rng;
+    const pale = rng.random() < PALE_CHANCE;
+    const d = {
+      x,
+      y,
+      // Radius: specks 0.5-1 mm across on a 7 mm fly, pale spots 1-2 mm.
+      r: flyLen * (pale ? rng.uniform(0.07, 0.13) : rng.uniform(0.036, 0.068)),
+      stretch: rng.uniform(1, 1.3),
+      // no drop lands perfectly round
+      rot: rng.uniform(0, Math.PI),
+      pale,
+      tone: rng.random(),
+      // 0 near-black, 1 brown
+      mass: 1,
+      // what is left of the mark itself, 0..1
+      smears: []
+    };
+    this.list.push(d);
+    this.changed.push(bounds(d));
+    while (this.list.length > this.max) this.changed.push(bounds(this.list.shift()));
+    return d;
+  }
+  /** Remove every mark. */
+  clear() {
+    for (const d of this.list) this.changed.push(bounds(d));
+    this.list = [];
+  }
+  /**
+   * The pointer moved from (ax, ay) to (bx, by), rubbing a circle `radius`
+   * px wide along the way.  Returns true if any mark changed.
+   */
+  wipe(ax, ay, bx, by, radius) {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.5 || !this.list.length) return false;
+    const ux = dx / len;
+    const uy = dy / len;
+    const rng = this.rng;
+    let any = false;
+    for (let k = this.list.length - 1; k >= 0; k--) {
+      const d = this.list[k];
+      const before = bounds(d);
+      let hit = false;
+      const s = rubbed(ax, ay, ux, uy, len, d.x, d.y, radius + d.r * d.stretch);
+      if (s > 0 && d.mass > 0) {
+        const dragged = d.mass * DRAG * s;
+        d.mass -= dragged;
+        const reach = d.r * (2.5 + 3.5 * s) * rng.uniform(0.8, 1.2);
+        const side = rng.gauss(0, 0.25) * d.r;
+        d.smears.push({
+          x0: d.x - ux * d.r * 0.3 - uy * side,
+          y0: d.y - uy * d.r * 0.3 + ux * side,
+          x1: d.x + ux * reach - uy * side * 2,
+          y1: d.y + uy * reach + ux * side * 2,
+          w: 2 * d.r * (0.55 + 0.45 * d.mass) * rng.uniform(0.85, 1.15),
+          a: Math.min(0.9, dragged * (d.pale ? 0.8 : 1.4)),
+          // A rub leaves fine parallel striations: [offset across, share of
+          // the length], for drawing up close.
+          grain: [0, 1, 2].map(() => [rng.uniform(-0.38, 0.38), rng.uniform(0.45, 1)])
+        });
+        hit = true;
+      }
+      for (const m of d.smears) {
+        if (m === d.smears[d.smears.length - 1] && hit) continue;
+        const mx = (m.x0 + m.x1) / 2;
+        const my = (m.y0 + m.y1) / 2;
+        const half = Math.hypot(m.x1 - m.x0, m.y1 - m.y0) / 2;
+        const t = rubbed(ax, ay, ux, uy, len, mx, my, radius + half);
+        if (t > 0) {
+          m.a *= 1 - THIN * t;
+          m.w *= 1 + 0.08 * t;
+          hit = true;
+        }
+      }
+      if (!hit) continue;
+      d.smears = d.smears.filter((m) => m.a >= 0.03);
+      if (d.smears.length > MAX_SMEARS) {
+        d.smears.sort((p, q) => q.a - p.a);
+        d.smears.length = MAX_SMEARS;
+      }
+      any = true;
+      if (d.mass < GONE && !d.smears.length) {
+        this.list.splice(k, 1);
+        this.changed.push(before);
+      } else {
+        this.changed.push(union(before, bounds(d)));
+      }
+    }
+    return any;
+  }
+};
+function rubbed(ax, ay, ux, uy, len, px, py, reach) {
+  const along = (px - ax) * ux + (py - ay) * uy;
+  const off = Math.abs((px - ax) * -uy + (py - ay) * ux);
+  if (off >= reach) return 0;
+  const half = Math.sqrt(reach * reach - off * off);
+  const inside = Math.min(len, along + half) - Math.max(0, along - half);
+  if (inside <= 0) return 0;
+  const centred = 1 - (off / reach) ** 2;
+  return Math.min(1, inside / (2 * reach) + 0.25) * centred;
+}
+function bounds(d) {
+  const r = d.r * d.stretch + 1.5;
+  let x0 = d.x - r;
+  let y0 = d.y - r;
+  let x1 = d.x + r;
+  let y1 = d.y + r;
+  for (const m of d.smears) {
+    const w = m.w / 2 + 1.5;
+    x0 = Math.min(x0, m.x0 - w, m.x1 - w);
+    y0 = Math.min(y0, m.y0 - w, m.y1 - w);
+    x1 = Math.max(x1, m.x0 + w, m.x1 + w);
+    y1 = Math.max(y1, m.y0 + w, m.y1 + w);
+  }
+  return [x0, y0, x1, y1];
+}
+function union(a, b) {
+  return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
+}
+
+// src/droppings-render.js
+var LIGHT = [-0.55, -0.84];
+var SPECK_DARK = [34, 23, 15];
+var SPECK_BROWN = [78, 52, 28];
+var SPOT = [150, 118, 66];
+var SPOT_RIM = [104, 76, 38];
+function rgba(c, a) {
+  return `rgba(${c[0]},${c[1]},${c[2]},${a.toFixed(3)})`;
+}
+function mixc(a, b, t) {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t].map(Math.round);
+}
+function drawDropping(ctx, d, devicePx = 1) {
+  const col = d.pale ? SPOT_RIM : mixc(SPECK_DARK, SPECK_BROWN, d.tone);
+  for (const m2 of d.smears) {
+    const dx = m2.x1 - m2.x0;
+    const dy = m2.y1 - m2.y0;
+    const len = Math.hypot(dx, dy) || 1e-3;
+    const nx = -dy / len;
+    const ny = dx / len;
+    const w0 = m2.w / 2;
+    const w1 = m2.w * 0.12;
+    const g = ctx.createLinearGradient(m2.x0, m2.y0, m2.x1, m2.y1);
+    g.addColorStop(0, rgba(col, m2.a * 0.85));
+    g.addColorStop(0.55, rgba(col, m2.a * 0.45));
+    g.addColorStop(1, rgba(col, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(m2.x0 + nx * w0, m2.y0 + ny * w0);
+    ctx.lineTo(m2.x1 + nx * w1, m2.y1 + ny * w1);
+    ctx.lineTo(m2.x1 - nx * w1, m2.y1 - ny * w1);
+    ctx.lineTo(m2.x0 - nx * w0, m2.y0 - ny * w0);
+    ctx.arc(m2.x0, m2.y0, w0, Math.atan2(-ny, -nx), Math.atan2(ny, nx), true);
+    ctx.fill();
+    if (m2.w * devicePx >= 4 && m2.grain) {
+      ctx.strokeStyle = g;
+      ctx.lineWidth = Math.max(m2.w * 0.06, 0.5 / devicePx);
+      ctx.beginPath();
+      for (const [o, f] of m2.grain) {
+        const sx = m2.x0 + nx * o * m2.w;
+        const sy = m2.y0 + ny * o * m2.w;
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(sx + dx * f, sy + dy * f);
+      }
+      ctx.stroke();
+    }
+  }
+  if (d.mass <= 0.01) return;
+  const m = d.mass;
+  const r = d.r * (0.5 + 0.5 * Math.sqrt(m));
+  ctx.save();
+  ctx.translate(d.x, d.y);
+  ctx.rotate(d.rot);
+  ctx.scale(d.stretch, 1);
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  if (d.pale) {
+    ctx.fillStyle = rgba(SPOT, 0.32 * m);
+    ctx.fill();
+    ctx.strokeStyle = rgba(SPOT_RIM, 0.55 * m);
+    ctx.lineWidth = r * 0.22;
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+  ctx.fillStyle = rgba(col, 0.93 * Math.pow(m, 0.8));
+  ctx.fill();
+  ctx.restore();
+  if (r * devicePx >= 2.2 && m > 0.3) {
+    ctx.fillStyle = `rgba(255,236,214,${(0.28 * m).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(d.x + LIGHT[0] * r * 0.42, d.y + LIGHT[1] * r * 0.42, r * 0.3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+var StainLayer = class {
+  constructor() {
+    this.canvas = document.createElement("canvas");
+    this.ctx = this.canvas.getContext("2d");
+    this.dpr = 1;
+  }
+  /** Match the overlay's backing store, and draw everything afresh. */
+  resize(width, height, dpr, list) {
+    this.canvas.width = Math.max(1, Math.round(width * dpr));
+    this.canvas.height = Math.max(1, Math.round(height * dpr));
+    this.dpr = dpr;
+    const ctx = this.ctx;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    for (const d of list) drawDropping(ctx, d, dpr);
+  }
+  /** Redraw the marks inside one box, in CSS px. */
+  redraw(box, list) {
+    const ctx = this.ctx;
+    const dpr = this.dpr;
+    const ax = Math.max(0, Math.floor(box[0] * dpr));
+    const ay = Math.max(0, Math.floor(box[1] * dpr));
+    const bx = Math.min(this.canvas.width, Math.ceil(box[2] * dpr));
+    const by = Math.min(this.canvas.height, Math.ceil(box[3] * dpr));
+    if (bx <= ax || by <= ay) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(ax, ay, bx - ax, by - ay);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(ax, ay, bx - ax, by - ay);
+    ctx.clip();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const [x0, y0, x1, y1] = [ax / dpr, ay / dpr, bx / dpr, by / dpr];
+    for (const d of list) {
+      const b = bounds(d);
+      if (b[2] < x0 || b[0] > x1 || b[3] < y0 || b[1] > y1) continue;
+      drawDropping(ctx, d, dpr);
+    }
+    ctx.restore();
+  }
+};
+
 // src/myxa.js
 var DEFAULTS = Object.freeze({
   /** How many flies. */
@@ -2934,6 +3222,12 @@ var DEFAULTS = Object.freeze({
   stray: true,
   /** Let a flying fly now and then leave the page for a moment. */
   excursions: true,
+  /** Flies leave droppings, which stay until the pointer rubs them off. */
+  droppings: true,
+  /** Seconds a fly spends on the ground between droppings: [min, max]. */
+  droppingInterval: [20, 90],
+  /** Most droppings kept at once; past this the oldest go. */
+  maxDroppings: 200,
   /** Seconds before a new fly turns up after the spider eats one: [min, max]. */
   respawnDelay: RESPAWN_DELAY,
   /** CSS pixels per millimetre.  96 dpi is the CSS reference. */
@@ -2985,8 +3279,17 @@ var Myxa = class _Myxa {
     this.rng = new Random(o.seed);
     this.overlay = new Overlay(o);
     this.world = new World(this.overlay.width, this.overlay.height, o.pxPerMm);
-    this.overlay.onresize = (w, h) => this.world.resize(w, h);
+    this.droppings = new Droppings(this.rng, o.maxDroppings);
+    this.stains = new StainLayer();
+    this.stains.resize(this.overlay.width, this.overlay.height, this.overlay.dpr, []);
+    this.overlay.onresize = (w, h) => {
+      this.world.resize(w, h);
+      this.stains.resize(w, h, this.overlay.dpr, this.droppings.list);
+      this.droppings.changed = [];
+      this.overlay.invalidate(0, 0, w, h);
+    };
     this.pointer = new Pointer();
+    this._wipeFrom = null;
     this._syncPopulation();
     this.running = true;
     this.paused = false;
@@ -3004,6 +3307,8 @@ var Myxa = class _Myxa {
     clearCaches();
     this.flies = [];
     this.spider = null;
+    this.droppings = null;
+    this.stains = null;
     this.running = false;
     return this;
   }
@@ -3035,6 +3340,8 @@ var Myxa = class _Myxa {
       this.overlay.resize();
     }
     if (options.pxPerMm !== void 0) this.world.pxPerMm = o.pxPerMm;
+    if (options.maxDroppings !== void 0) this.droppings.max = o.maxDroppings;
+    if (options.droppings === false) this.clearDroppings();
     for (const fly of this.flies) this._configureFly(fly);
     this._syncPopulation();
     if (this.spider) this._configureSpider(this.spider);
@@ -3050,7 +3357,8 @@ var Myxa = class _Myxa {
       cursor: o.cursor,
       stray: o.stray,
       excursions: o.excursions,
-      behaviour: o.behaviour
+      behaviour: o.behaviour,
+      droppingInterval: o.droppings ? o.droppingInterval : null
     };
   }
   _configureFly(fly) {
@@ -3061,6 +3369,7 @@ var Myxa = class _Myxa {
     fly.cursorFear = f.cursor;
     fly.stray = f.stray;
     fly.excursions = f.excursions;
+    fly.droppingInterval = f.droppingInterval;
     fly.setBehaviour(f.behaviour);
   }
   _configureSpider(spider) {
@@ -3121,6 +3430,44 @@ var Myxa = class _Myxa {
       fly.update(dt);
     }
     if (sp) sp.update(dt);
+    this._updateDroppings(cursor);
+  }
+  /** Rub off every dropping at once. */
+  clearDroppings() {
+    if (this.droppings) {
+      this.droppings.clear();
+      this._flushStains();
+    }
+    return this;
+  }
+  /** Collect what the flies left, and let the pointer rub marks off. */
+  _updateDroppings(cursor) {
+    const d = this.droppings;
+    if (!d) return;
+    const w = this.world;
+    for (const fly of this.flies) {
+      for (const [x, y] of fly.drops) {
+        if (w.contains(x, y)) d.add(x, y, fly.length);
+      }
+      fly.drops.length = 0;
+    }
+    if (cursor && this._wipeFrom) {
+      const [ax, ay] = this._wipeFrom;
+      d.wipe(ax, ay, cursor[0], cursor[1], WIPE_RADIUS_MM * w.pxPerMm);
+    }
+    this._wipeFrom = cursor;
+    this._flushStains();
+  }
+  /** Redraw the changed parts of the stain layer and have them shown. */
+  _flushStains() {
+    const d = this.droppings;
+    if (!d.changed.length || !this.stains) return;
+    for (const box of d.changed) {
+      this.stains.redraw(box, d.list);
+      this.overlay.invalidate(...box);
+    }
+    d.changed = [];
+    this.overlay.underlay = d.count ? this.stains.canvas : null;
   }
   draw() {
     const ov = this.overlay;
@@ -3156,12 +3503,14 @@ var Myxa = class _Myxa {
 export {
   DEFAULTS,
   DEFAULT_BEHAVIOUR,
+  Droppings,
   Fly,
   Myxa,
   Random,
   Spider,
   World,
   Myxa as default,
+  drawDropping,
   drawFly,
   drawFlyShadow,
   drawSpider,
