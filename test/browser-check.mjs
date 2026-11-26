@@ -120,17 +120,19 @@ try {
     toy.set({ cursor: false }); toy.droppings.add(300, 500, f.length); })()`);
   await sleep(150);
   const pixel = `(() => { const c = toy.overlay.canvas, d = toy.overlay.dpr;
-    return c.getContext('2d').getImageData(Math.round(300 * d), Math.round(500 * d), 1, 1).data[3]; })()`;
+    // The most ink in a small box: a small speck may straddle pixels.
+    const px = c.getContext('2d').getImageData(Math.round(296 * d), Math.round(496 * d), Math.round(9 * d), Math.round(9 * d)).data;
+    let most = 0; for (let i = 3; i < px.length; i += 4) most = Math.max(most, px[i]); return most; })()`;
   const inked = await evaluate(pixel);
   await mouse('mouseMoved', 260, 500);
   let strokes = 0;
-  for (; strokes < 16 && await evaluate('toy.droppings.count'); strokes++) {
-    for (let x = 260; x <= 340; x += 8) await mouse('mouseMoved', strokes % 2 ? 600 - x : x, 500);
-    await sleep(40);
+  for (; strokes < 80 && await evaluate('toy.droppings.count'); strokes++) {
+    for (let x = 260; x <= 340; x += 16) await mouse('mouseMoved', strokes % 2 ? 600 - x : x, 500);
+    await sleep(20);
   }
   await sleep(100);
   const cleaned = await evaluate(pixel);
-  check('a dropping shows, and a few strokes rub it off', inked > 100 && cleaned === 0,
+  check('a dropping shows, and scrubbing rubs it off', inked > 100 && cleaned === 0,
     `alpha ${inked} -> ${cleaned} after ${strokes} strokes`);
   await evaluate(`toy.set({ cursor: true })`);
 

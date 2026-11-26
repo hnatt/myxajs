@@ -2935,8 +2935,9 @@ function clearCaches() {
 // src/droppings.js
 var WIPE_RADIUS_MM = 2.2;
 var PALE_CHANCE = 0.15;
-var DRAG = 0.6;
-var THIN = 0.45;
+var DRAG = 0.083;
+var THIN = 0.2;
+var SMEAR_INK = 3.5;
 var MAX_SMEARS = 5;
 var GONE = 0.05;
 var Droppings = class {
@@ -3011,7 +3012,7 @@ var Droppings = class {
           x1: d.x + ux * reach - uy * side * 2,
           y1: d.y + uy * reach + ux * side * 2,
           w: 2 * d.r * (0.55 + 0.45 * d.mass) * rng.uniform(0.85, 1.15),
-          a: Math.min(0.9, dragged * (d.pale ? 0.8 : 1.4)),
+          a: Math.min(0.9, dragged * SMEAR_INK * (d.pale ? 0.6 : 1)),
           // A rub leaves fine parallel striations: [offset across, share of
           // the length], for drawing up close.
           grain: [0, 1, 2].map(() => [rng.uniform(-0.38, 0.38), rng.uniform(0.45, 1)])

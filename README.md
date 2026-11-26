@@ -172,8 +172,9 @@ Now and then there is a paler, larger spot of regurgitate, which dries with a
 darker rim. A fly drops one every minute or so of ground time, from the tip of
 its abdomen, and only while it stands still. The marks stay where they fall
 until the pointer rubs them. Each pass drags part of a mark into a streak in
-the direction of the rub, and later passes thin the streaks. One quick pass
-smudges a speck, and a few strokes back and forth clean it off. The pointer
+the direction of the rub, and later passes thin the streaks. They are dried
+on: one pass only smudges a speck, and it takes about thirty-five strokes back
+and forth to clean it off. The pointer
 rubs as a fingertip about 4 mm across, and resting it on a mark does nothing.
 
 ### The spider

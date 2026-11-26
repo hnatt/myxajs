@@ -7,8 +7,9 @@
 //
 // A mark stays until the pointer rubs it off.  It does not just vanish: each
 // pass drags part of it into a streak in the direction of the rub, and the
-// streaks thin out with more rubbing.  A quick pass smudges a speck; a few
-// strokes back and forth clean it.
+// streaks thin out with more rubbing.  Dried on, they take some scrubbing: a
+// pass smudges a speck, and it takes about thirty-five strokes back and forth
+// to clean it.
 //
 // Positions and sizes are in CSS px, in the same space as the animals.  No
 // DOM here: the renderer is in droppings-render.js.
@@ -17,8 +18,9 @@
 export const WIPE_RADIUS_MM = 2.2;
 
 const PALE_CHANCE = 0.15; // share of marks that are regurgitate, not faeces
-const DRAG = 0.6; // share of a speck one full pass drags into a smear
-const THIN = 0.45; // share of a smear one full pass wipes away
+const DRAG = 0.083; // share of a speck one full pass drags into a smear
+const THIN = 0.2; // share of a smear one full pass wipes away
+const SMEAR_INK = 3.5; // how dark a smear is for the share of the speck in it
 const MAX_SMEARS = 5;
 const GONE = 0.05; // a speck this faint, with no smear left, is clean
 
@@ -99,7 +101,7 @@ export class Droppings {
           x1: d.x + ux * reach - uy * side * 2,
           y1: d.y + uy * reach + ux * side * 2,
           w: 2 * d.r * (0.55 + 0.45 * d.mass) * rng.uniform(0.85, 1.15),
-          a: Math.min(0.9, dragged * (d.pale ? 0.8 : 1.4)),
+          a: Math.min(0.9, dragged * SMEAR_INK * (d.pale ? 0.6 : 1)),
           // A rub leaves fine parallel striations: [offset across, share of
           // the length], for drawing up close.
           grain: [0, 1, 2].map(() => [rng.uniform(-0.38, 0.38), rng.uniform(0.45, 1)]),

@@ -48,9 +48,11 @@ test('a rub that misses leaves it alone', () => {
 test('one pass smudges a speck into a streak along the rub', () => {
   const [d, s] = one();
   assert.ok(d.wipe(80, 100, 120, 100, R));
-  assert.ok(s.mass < 0.6 && s.mass > 0.2, `mass ${s.mass}`);
+  // Dried on: one pass moves only a little of it, but leaves a visible smear.
+  assert.ok(s.mass < 0.97 && s.mass > 0.85, `mass ${s.mass}`);
   assert.equal(s.smears.length, 1);
   const m = s.smears[0];
+  assert.ok(m.a > 0.2, `smear alpha ${m.a}`);
   assert.ok(m.x1 > m.x0 + 2 * s.r, 'the smear trails the way the pointer went');
   assert.ok(Math.abs(m.y1 - m.y0) < 2 * s.r);
   assert.equal(d.count, 1, 'one pass does not clean it');
@@ -59,16 +61,16 @@ test('one pass smudges a speck into a streak along the rub', () => {
   assert.ok(b[2] >= m.x1, 'the changed box covers the new smear');
 });
 
-test('a few strokes back and forth clean it off', () => {
+test('it takes some scrubbing to clean off', () => {
   const [d] = one();
   let strokes = 0;
-  while (d.count && strokes < 30) {
+  while (d.count && strokes < 100) {
     const dir = strokes % 2 ? -1 : 1;
     d.wipe(100 - 20 * dir, 100, 100 + 20 * dir, 100, R);
     strokes++;
   }
   assert.equal(d.count, 0);
-  assert.ok(strokes >= 3 && strokes <= 12, `took ${strokes} strokes`);
+  assert.ok(strokes >= 28 && strokes <= 45, `took ${strokes} strokes`);
 });
 
 test('a graze smudges less than a pass straight over', () => {
