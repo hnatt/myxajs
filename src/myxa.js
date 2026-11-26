@@ -9,6 +9,7 @@ import { Pointer } from './pointer.js';
 import { drawFly, drawFlyShadow } from './fly-render.js';
 import { drawSpider, drawSpiderShadow, clearCaches } from './spider-render.js';
 import { Droppings, WIPE_RADIUS_MM } from './droppings.js';
+import { Flock } from './flock.js';
 import { StainLayer } from './droppings-render.js';
 
 export const DEFAULTS = Object.freeze({
@@ -46,6 +47,10 @@ export const DEFAULTS = Object.freeze({
   droppingInterval: [20, 90],
   /** Most droppings kept at once; past this the oldest go. */
   maxDroppings: 200,
+  /** Flies that meet on foot sometimes mate. */
+  mating: true,
+  /** Chance that a meeting of two flies on foot turns into mating. */
+  matingChance: 0.1,
   /** Seconds before a new fly turns up after the spider eats one: [min, max]. */
   respawnDelay: RESPAWN_DELAY,
   /** CSS pixels per millimetre.  96 dpi is the CSS reference. */
@@ -101,6 +106,8 @@ export class Myxa {
     this.rng = new Random(o.seed);
     this.overlay = new Overlay(o);
     this.world = new World(this.overlay.width, this.overlay.height, o.pxPerMm);
+    this.flock = new Flock(this.rng, { mating: o.mating, matingChance: o.matingChance });
+    this._drawOrder = [];
     this.droppings = new Droppings(this.rng, o.maxDroppings);
     this.stains = new StainLayer();
     this.stains.resize(this.overlay.width, this.overlay.height, this.overlay.dpr, []);
@@ -169,6 +176,8 @@ export class Myxa {
     }
     if (options.pxPerMm !== undefined) this.world.pxPerMm = o.pxPerMm;
     if (options.maxDroppings !== undefined) this.droppings.max = o.maxDroppings;
+    this.flock.mating = o.mating;
+    this.flock.matingChance = o.matingChance;
     if (options.droppings === false) this.clearDroppings();
     for (const fly of this.flies) this._configureFly(fly);
     this._syncPopulation();
@@ -269,6 +278,7 @@ export class Myxa {
       fly.senseCursor(cursor, dt);
       fly.update(dt);
     }
+    this.flock.update(this.flies, dt);
     if (sp) sp.update(dt);
     this._updateDroppings(cursor);
   }
@@ -322,7 +332,12 @@ export class Myxa {
     const dpr = ov.dpr;
     ov.begin();
 
-    for (const fly of this.flies) {
+    // Lowest first, so a fly riding on another is drawn on top of it.
+    const order = this._drawOrder;
+    order.length = 0;
+    for (const fly of this.flies) order.push(fly);
+    order.sort((a, b) => a.height - b.height);
+    for (const fly of order) {
       if (fly.hidden || !ov.mark(fly.x, fly.y, fly.extent)) continue;
       ctx.save();
       ctx.translate(fly.x, fly.y);

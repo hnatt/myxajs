@@ -9,6 +9,7 @@
 
 import { World, Fly, Spider, Random, DEFAULT_BEHAVIOUR, drawFly, drawFlyShadow, drawSpider, drawSpiderShadow } from '../src/index.js';
 import { Droppings, WIPE_RADIUS_MM } from '../src/droppings.js';
+import { Flock } from '../src/flock.js';
 import { drawDropping } from '../src/droppings-render.js';
 
 const ARENA_W = 640; // CSS px: a small page, so the two meet often
@@ -26,6 +27,8 @@ const FLY_BEHAVIOURS = {
   groomWing: { weights: ONLY('groomWing'), state: 'groom_wing' },
   // Mostly in the air, but it has to land somewhere between flights.
   fly: { weights: { ...ONLY('takeOff'), idle: 0.15 }, state: 'launch' },
+  // The other fly is set down in front of it, and it goes courting.
+  mate: { weights: DEFAULT_BEHAVIOUR, mate: true },
 };
 
 const FLY_STATE = {
@@ -37,7 +40,42 @@ const FLY_STATE = {
   launch: 'taking off',
   flight: 'flying',
   landing: 'landing',
+  court: 'walking up to another fly',
+  await: 'turning to face a fly that is walking up',
+  mount: 'leaping onto the other fly\'s back',
+  follow: 'following the spider off the page',
 };
+const MOURN_PHASE = {
+  startle: 'startled out from under the spider',
+  turn: 'turning round to look',
+  watch: 'watching the spider take its mate',
+  step: 'taking a few steps after it',
+  pause: 'hesitating',
+};
+
+/** Words for what a fly is doing. */
+function describe(fly) {
+  if (fly.state === 'mate') {
+    const where = fly.mateRole === 'top' ? 'on top' : 'underneath';
+    return fly._pair && fly._pair.phase === 'tussle' ? `mating, ${where}: the tussle at the start` : `mating, ${where}`;
+  }
+  if (fly.state === 'mourn') return MOURN_PHASE[fly._mournPhase] ?? 'mourning';
+  const phase = fly.courtPhase;
+  if (phase) {
+    const top = fly.state === 'court';
+    return {
+      approach: top ? 'walking up to another fly' : 'turning to face a fly walking up',
+      face: top ? 'waiting for the other fly to turn round' : 'turning to face a fly walking up',
+      stare: 'staring into the other fly\'s eyes',
+      present: top ? 'watching the other fly turn its back' : 'turning its back to its partner',
+      close: top ? 'closing in from behind' : 'waiting, back turned, for its partner',
+    }[phase];
+  }
+  if (fly.state === 'mate' && fly.mateRole === 'top' && Math.hypot(...fly._slip) > 0.03) {
+    return 'scrambling back into place on the other\'s back';
+  }
+  return FLY_STATE[fly.state] ?? fly.state;
+}
 const SIDE = { '-1': 'left', 1: 'right', 0: 'both' };
 const GROOM_ACT = {
   rubFront: () => 'rubbing the front feet together',
@@ -76,7 +114,9 @@ export class Inspector {
     this.rng = new Random();
     this.world = new World(ARENA_W, ARENA_H);
     // More often than on the page, so there is something to look at.
-    this.flies = [new Fly(this.world, this.rng, { cursor: false, droppingInterval: [8, 30] })];
+    // Two flies, so there is someone to meet.
+    this.flies = [0, 1].map(() => new Fly(this.world, this.rng, { cursor: false, droppingInterval: [8, 30] }));
+    this.flock = new Flock(this.rng);
     this.droppings = new Droppings(this.rng);
     this.spider = null;
     this.setSpider(true);
@@ -91,7 +131,7 @@ export class Inspector {
     // Rub droppings off with the pointer, as on the page.
     this._rubFrom = null;
     canvas.addEventListener('pointermove', (e) => this._rub(e), { passive: true });
-    canvas.addEventListener('pointerleave', () => { this._rubFrom = null; }, { passive: true });
+    canvas.addEventListener('pointerleave', () => { this._rubFrom = this._pointer = null; }, { passive: true });
 
     new ResizeObserver(() => this._resize()).observe(canvas);
     this._resize();
@@ -134,6 +174,11 @@ export class Inspector {
     const b = FLY_BEHAVIOURS[key];
     const fly = this.fly;
     fly.setBehaviour(b.weights);
+    if (b.mate) {
+      this._wantState = null;
+      this._courtNow();
+      return;
+    }
     // Landing picks its own next move; the box puts it back on this one.
     this._wantState = b.state && b.state !== 'launch' ? b.state : null;
     const grounded = !fly.hidden && !['launch', 'flight', 'landing'].includes(fly.state);
@@ -147,11 +192,59 @@ export class Inspector {
     sp._enter(state);
   }
 
+  /** Set the other fly down a few lengths ahead, and send this one courting. */
+  _courtNow() {
+    const [a, b] = this.flies;
+    for (const f of [a, b]) {
+      if (f.mate) f._enter('idle');
+      if (f.hidden) f.respawn();
+    }
+    this._ground(a, a.x, a.y, a.heading);
+    const L = a.length;
+    const ahead = a.heading + this.rng.uniform(-0.6, 0.6);
+    this._ground(b, a.x + Math.cos(ahead) * 3 * L, a.y + Math.sin(ahead) * 3 * L, this.rng.uniform(0, Math.PI * 2));
+    a.court(b);
+  }
+
+  /** Put a fly on the ground at (x, y), inside the arena. */
+  _ground(f, x, y, heading) {
+    [f.x, f.y] = this.world.clamp(x, y, 2 * f.length);
+    f.height = 0;
+    f.heading = heading;
+    f._reseedFeet();
+    f._enter('idle');
+  }
+
+  /**
+   * Put a mating pair down in front of the spider.  The fly being watched is
+   * the one underneath: the one the spider leaves behind.
+   */
+  dropPair() {
+    const sp = this.spider;
+    if (!sp || sp.carried) return;
+    sp._sated = 0;
+    const [bottom, top] = this.flies;
+    for (const f of [bottom, top]) {
+      if (f.mate) f._enter('idle');
+      if (f.hidden) f.respawn();
+    }
+    const [, n] = sp._edge();
+    const L = sp.length;
+    const along = [-n[1], n[0]];
+    const side = this.rng.uniform(-2, 2) * L;
+    this._ground(bottom, sp.x + n[0] * 4.5 * L + along[0] * side, sp.y + n[1] * 4.5 * L + along[1] * side,
+      this.rng.uniform(0, Math.PI * 2));
+    top.mount(bottom);
+    if (this.subject === 'fly') this._glide();
+  }
+
   /** Put the fly down a few body lengths in front of the spider. */
   dropFly() {
     const sp = this.spider;
     const fly = this.fly;
     if (!sp || sp.carried) return;
+    sp._sated = 0;
+    if (fly.mate) fly._enter('idle');
     if (fly.hidden) {
       fly.respawn();
     }
@@ -207,6 +300,7 @@ export class Inspector {
       if (this.droppings.wipe(this._rubFrom[0], this._rubFrom[1], p[0], p[1], radius) && this.paused) this._draw();
     }
     this._rubFrom = p;
+    this._pointer = p;
   }
 
   _kick() {
@@ -236,7 +330,9 @@ export class Inspector {
         continue;
       }
       fly.sensePredator(seen, dt);
-      fly.senseCursor(null, dt);
+      // The pointer over the box, in the arena: these flies are not afraid of
+      // it, but it can still touch a mating pair.
+      fly.senseCursor(this._pointer ?? null, dt);
       const was = fly.state;
       fly.update(dt);
       for (const [x, y] of fly.drops) this.droppings.add(x, y, fly.length);
@@ -245,6 +341,7 @@ export class Inspector {
         fly._enter(this._wantState);
       }
     }
+    this.flock.update(this.flies, dt);
     if (sp) sp.update(dt);
 
     const after = this._focus();
@@ -338,7 +435,8 @@ export class Inspector {
       const s = Math.sin(-rot);
       return [w / 2 + (dx * c - dy * s) * zoom, h / 2 + (dx * s + dy * c) * zoom];
     };
-    for (const fly of this.flies) {
+    // Lowest first, so one riding on another is drawn on top of it.
+    for (const fly of [...this.flies].sort((a, b) => a.height - b.height)) {
       if (fly.hidden) continue;
       const [x, y] = place(fly.x, fly.y);
       ctx.save();
@@ -460,9 +558,11 @@ export class Inspector {
       const fly = this.fly;
       if (fly.hidden) {
         const held = this.spider && this.spider.carried === fly;
-        text = held ? 'Fly: caught' : 'Fly: eaten. Another one is on its way.';
+        if (held) text = 'Fly: caught';
+        else if (fly.state === 'follow') text = 'Fly: gone over the edge after the spider. Another one is on its way.';
+        else text = 'Fly: eaten. Another one is on its way.';
       } else {
-        text = `Fly: ${FLY_STATE[fly.state] ?? fly.state}`;
+        text = `Fly: ${describe(fly)}`;
         if (fly.groomAct) text += `, ${GROOM_ACT[fly.groomAct](fly.groomSide)}`;
       }
     }

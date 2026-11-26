@@ -160,6 +160,32 @@ try {
   }
   const stopped = await evaluate(`(() => { const c = toy.overlay.canvas; toy.stop(); return c.isConnected; })()`);
   check('stop() removes the overlay', stopped === false, String(stopped));
+
+  // The demo page keeps its panel settings across a reload.
+  const ready = async () => {
+    for (let i = 0; i < 100; i++) {
+      await sleep(100);
+      try {
+        if (await evaluate(`!!(window.toy && window.toy.running)`)) return;
+      } catch { /* still loading */ }
+    }
+  };
+  await send('Page.navigate', { url });
+  await ready();
+  await evaluate(`(() => { const f = document.getElementById('flies'); f.value = 3;
+    f.dispatchEvent(new Event('input', { bubbles: true }));
+    const s = document.getElementById('spider'); s.checked = false;
+    s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await send('Page.navigate', { url });
+  await ready();
+  const kept = await evaluate(`[toy.options.flies, toy.options.spider, document.getElementById('flies').value,
+    document.getElementById('spider').checked]`);
+  await evaluate(`document.getElementById('defaults').click()`);
+  await send('Page.navigate', { url });
+  await ready();
+  const reset = await evaluate(`[toy.options.flies, toy.options.spider, localStorage.getItem('myxa-demo-options')]`);
+  check('the demo keeps its settings across a reload', JSON.stringify(kept) === '[3,false,"3",false]'
+    && JSON.stringify(reset) === '[1,true,null]', `${JSON.stringify(kept)} then ${JSON.stringify(reset)}`);
   // The one-tag build, and respect for prefers-reduced-motion.
   const base = new URL('.', url).href;
   await send('Page.navigate', { url: `${base}script-tag.html` });

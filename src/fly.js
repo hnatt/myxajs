@@ -24,8 +24,44 @@ export const GROOM_WING = 'groom_wing';
 export const LAUNCH = 'launch';
 export const FLIGHT = 'flight';
 export const LANDING = 'landing';
+// Two flies together.
+export const COURT = 'court'; // walking up to another fly to mount it
+export const AWAIT = 'await'; // holding still while one walks up
+export const MOUNT = 'mount'; // the hop onto the other's back
+export const MATE = 'mate'; // in copula, one on top of the other
+// What is left when the spider takes the one on top.
+export const MOURN = 'mourn'; // starts away, turns, watches, hesitates
+export const FOLLOW = 'follow'; // walks after the spider, off the page
 
 const AIRBORNE = new Set([LAUNCH, FLIGHT, LANDING]);
+/** Doing nothing in particular: free to be courted. */
+const FREE = new Set([WALK, IDLE, GROOM_FRONT, GROOM_HIND, GROOM_WING]);
+/** Linked to another fly. */
+const PAIRED = new Set([COURT, AWAIT, MOUNT, MATE]);
+/** Locked together: neither flees, and a spider's leap cannot miss. */
+const LOCKED = new Set([MOUNT, MATE]);
+
+// Mating.  House flies stay in copula for about an hour; a page cannot wait
+// that long, so it is cut to under a minute.  It opens with a short tussle:
+// the one underneath kicks at the one on top with its hind legs and buzzes
+// its wings, while the one on top drums on its head with its front legs.
+const MATE_TIME = [20, 45];
+const TUSSLE_TIME = [1.0, 2.5];
+const MOUNT_TIME = 0.16; // the leap onto the back is over in a blink
+const TOP_HEIGHT = 0.22; // body lengths: riding on the other's back
+const TOP_BACK = 0.32; // and set back so its head is over the other's thorax
+/** Courtship: the suitor stops this far off, the two turn to face each other
+ * and look each other over for a moment before it closes in. */
+const STARE_L = 2.2;
+const STARE_TIME = [1.2, 2.4];
+/** The pointer can touch a pair that is too busy to flee it.  It brushes the
+ * wings aside, and a shove knocks the one on top off its place, up to this
+ * far (body lengths) and this far round (radians); it scrambles back in a few
+ * jerky moves. */
+const SLIP_MAX = 0.3;
+const SLIP_YAW_MAX = 0.6;
+
+let nextId = 1;
 
 /** What a grounded fly does next.  Real flies groom a *lot*. */
 export const DEFAULT_BEHAVIOUR = {
@@ -153,6 +189,22 @@ export class Fly {
     this._prevLegPhase = [0, 0, 0, 0, 0, 0];
 
     this.pose = makePose();
+    this.id = nextId++;
+    /** The fly it is courting, waiting for or mating with. */
+    this.mate = null;
+    this.mateRole = null; // 'top' or 'bottom' while mating
+    this._pair = null; // timing shared by the two of a mating pair
+    this._mourn = null; // the spider that took its mate
+    this._court = null; // the courtship two flies share: phase and timing
+    /** The pointer as it touches the fly, whether or not it is afraid of it. */
+    this.pointer = null;
+    this._pointerStep = [0, 0]; // how far it moved since the last frame, px
+    this._wingPush = [0, 0]; // wings pushed aside by the pointer, springing back
+    this._wingEase = [0, 0]; // the eased grooming spread, before any push
+    this._slip = [0, 0]; // the one on top shoved off its place, body lengths
+    this._slipYaw = 0;
+    this._scrambleIn = 0;
+    this._mournPhase = null;
     this._wingOpenTarget = [0, 0];
     this._dropIn = null; // seconds of ground time until the next dropping
     /** Droppings left since the owner last emptied this: [x, y] in CSS px. */
@@ -292,6 +344,8 @@ export class Fly {
       return;
     }
     if (!this.predator || this._alarmCd > 0 || this.hidden || AIRBORNE.has(this.state)) return;
+    // Locked in copula, or with eyes only for the spider that took its mate.
+    if (LOCKED.has(this.state) || this.state === MOURN || this.state === FOLLOW) return;
     const dx = this.x - this.predator[0];
     const dy = this.y - this.predator[1];
     const dist = Math.hypot(dx, dy);
@@ -307,6 +361,9 @@ export class Fly {
   // -- the pointer, which the fly treats as a predator ------------------
   /** Feed in the pointer position; null when it is outside the page. */
   senseCursor(pos, dt) {
+    this._pointerStep[0] = pos && this.pointer ? pos[0] - this.pointer[0] : 0;
+    this._pointerStep[1] = pos && this.pointer ? pos[1] - this.pointer[1] : 0;
+    this.pointer = pos ? [pos[0], pos[1]] : null;
     if (!pos || !this.cursorFear) {
       this.cursor = null;
       this.cursorVel = [0, 0];
@@ -386,6 +443,9 @@ export class Fly {
     }
     if (this.state === LAUNCH) return;
 
+    // Too busy to care.  The pointer can still touch them (_feelPointer).
+    if (LOCKED.has(this.state)) return;
+
     if (distMm < CURSOR_PANIC_MM * shy || (near && ttc < CURSOR_PANIC_TTC)) {
       // Too close, or something is arriving fast: bail out into the air.
       this.heading = away + rng.gauss(0, 0.25);
@@ -404,9 +464,15 @@ export class Fly {
   }
 
   /** Seized by the spider: stop existing until it is done. */
-  caught() {
+  caught(spider = null) {
+    const mate = this.mate;
+    const wasTop = this.mateRole === 'top';
+    this._unlink();
     this.hidden = true;
     this.predator = null;
+    if (!mate) return;
+    if (wasTop && spider) mate._bereave(spider);
+    else mate._enter(mate.height > 0.05 ? LAUNCH : IDLE);
   }
 
   /** The spider has finished with it; another will be along shortly. */
@@ -455,6 +521,7 @@ export class Fly {
     this.hidden = false;
     this.respawnIn = null;
     this.predator = null;
+    this._mourn = null;
     this._excursion = 0;
     this._reseedFeet();
     this._enter(FLIGHT);
@@ -465,6 +532,14 @@ export class Fly {
 
   // -- state machine ----------------------------------------------------
   _enter(state) {
+    // Leaving a pair for anything else lets the other one go too.
+    if (this.mate && !PAIRED.has(state)) {
+      const other = this.mate;
+      this._unlink();
+      if (PAIRED.has(other.state)) other._enter(other.height > 0.05 ? LAUNCH : IDLE);
+    }
+    if (state !== MOURN && state !== FOLLOW) this._mourn = null;
+    if (state !== COURT && state !== AWAIT) this._court = null;
     this._blendFrom = this.pose.feet.map((f) => [...f]);
     this._blendLift = [...this.pose.lift];
     this._blendT = 0;
@@ -505,11 +580,458 @@ export class Fly {
       this._saccadeIn = range(rng, SACCADE_GAP);
       this._turnLeft = this._turnRate = 0;
       this._cruiseYaw = 0;
+    } else if (state === COURT) {
+      this.stateDur = 14; // gives up if it has not got there by then
+      this.walkSpeed = rng.uniform(14, 22) * this.speedScale;
+      this._reseedFeet();
+    } else if (state === AWAIT) {
+      this.stateDur = 15;
+      this._reseedFeet();
+    } else if (state === MOUNT) {
+      this.stateDur = MOUNT_TIME;
+      this._mountFrom = [this.x, this.y, this.heading];
+      this._escapeIn = null;
+    } else if (state === MATE) {
+      this.stateDur = Infinity; // the one underneath keeps the time
+      this._escapeIn = null;
+      this._slip = [0, 0];
+      this._slipYaw = 0;
+    } else if (state === MOURN) {
+      this.stateDur = Infinity;
+      this._escapeIn = null;
+    } else if (state === FOLLOW) {
+      this.stateDur = 45;
+      this.walkSpeed = rng.uniform(8, 13) * this.speedScale;
+      this._reseedFeet();
     } else if (state === LANDING) {
       this.stateDur = 1.8;
       this._landBest = Infinity;
       if (this.cruiseSpeed <= 0) this.cruiseSpeed = 300 * this.speedScale * this.pxPerMm;
       this._target = this._landingSpot();
+    }
+  }
+
+  // -- other flies --------------------------------------------------------
+
+  /** On the ground and not on another fly's back. */
+  get onFoot() {
+    return !this.hidden && !AIRBORNE.has(this.state) && this.state !== MOUNT && this.height < 0.05;
+  }
+
+  /** Moving across the ground under its own power. */
+  get walking() {
+    if (this.state === MOURN) return this._mournPhase === 'startle' || this._mournPhase === 'step';
+    return this.state === WALK || this.state === COURT || this.state === FOLLOW;
+  }
+
+  /** Free to start something with another fly. */
+  get available() {
+    return !this.hidden && !this.mate && FREE.has(this.state) && !(this._fleeT > 0) && this._escapeIn === null;
+  }
+
+  /** Walk up to `other`, which holds still, and mount it. */
+  court(other) {
+    this.mate = other;
+    other.mate = this;
+    this._court = other._court = { phase: 'approach', t: 0, stareFor: 0 };
+    this._enter(COURT);
+    other._enter(AWAIT);
+  }
+
+  /** Where a courtship has got to, or null: approach, face, stare, present
+   * (the one to be mounted turns its back), close. */
+  get courtPhase() {
+    return this._court && (this.state === COURT || this.state === AWAIT) ? this._court.phase : null;
+  }
+
+  /** Straight into copula on top of `bottom`, without the approach. */
+  mount(bottom) {
+    this.mate = bottom;
+    bottom.mate = this;
+    this._beginMating();
+  }
+
+  _beginMating() {
+    const bottom = this.mate;
+    const pair = { phase: 'tussle', t: 0, dur: this.rng.uniform(TUSSLE_TIME[0], TUSSLE_TIME[1]) };
+    this.mateRole = 'top';
+    bottom.mateRole = 'bottom';
+    this._pair = bottom._pair = pair;
+    this._enter(MATE);
+    bottom._enter(MATE);
+    this._ride();
+  }
+
+  /** Where the one on top sits: on the other's back, set back a little. */
+  _ride() {
+    const b = this.mate;
+    const L = b.length;
+    const fwd = (this._slip[0] - TOP_BACK) * L;
+    const side = this._slip[1] * L;
+    const c = Math.cos(b.heading);
+    const s = Math.sin(b.heading);
+    this.x = b.x + fwd * c - side * s;
+    this.y = b.y + fwd * s + side * c;
+    this.height = TOP_HEIGHT;
+  }
+
+  /** Facing `other`, near enough. */
+  _faces(other, within = 0.2) {
+    return Math.abs(wrap(Math.atan2(other.y - this.y, other.x - this.x) - this.heading)) < within;
+  }
+
+  /**
+   * The pointer brushing a fly in copula.  Moving across a wing pushes it
+   * aside, and it springs back; a shove across the one on top knocks it off
+   * its place on the other's back.
+   */
+  _feelPointer() {
+    const ptr = this.pointer;
+    const st = this._pointerStep;
+    if (!ptr || (st[0] === 0 && st[1] === 0)) return;
+    const L = this.length;
+    const c = Math.cos(this.heading);
+    const s = Math.sin(this.heading);
+    const dx = ptr[0] - this.x;
+    const dy = ptr[1] - this.y;
+    const lx = (dx * c + dy * s) / L;
+    const ly = (-dx * s + dy * c) / L;
+    const sx = (st[0] * c + st[1] * s) / L;
+    const sy = (-st[0] * s + st[1] * c) / L;
+    // The wings lie back over the abdomen, one either side.
+    if (lx < 0.1 && lx > -0.85 && Math.abs(ly) > 0.03 && Math.abs(ly) < 0.65) {
+      const k = ly < 0 ? 0 : 1;
+      const out = Math.sign(ly) * sy; // moving out from the body opens it
+      this._wingPush[k] = clamp(this._wingPush[k] + out * 3.5 + Math.abs(sx) * 0.6, -0.6, 1.2);
+    }
+    if (this.mateRole !== 'top' || Math.hypot(lx, ly * 1.8) > 0.55) return;
+    // Shoved: dragged along a little with the pointer, and twisted by a push
+    // off its middle.
+    const b = this.mate;
+    const cb = Math.cos(b.heading);
+    const sb = Math.sin(b.heading);
+    const bx = (st[0] * cb + st[1] * sb) / L;
+    const by = (-st[0] * sb + st[1] * cb) / L;
+    this._slip[0] = clamp(this._slip[0] + bx * 0.5, -SLIP_MAX, SLIP_MAX);
+    this._slip[1] = clamp(this._slip[1] + by * 0.5, -SLIP_MAX, SLIP_MAX);
+    this._slipYaw = clamp(this._slipYaw + lx * sy * 1.4, -SLIP_YAW_MAX, SLIP_YAW_MAX);
+    this._scrambleIn = 0.1;
+  }
+
+  /** Off its place: scramble back in a few quick jerks.  True while it is. */
+  _regainPlace(dt) {
+    const off = Math.hypot(this._slip[0], this._slip[1]) + 0.5 * Math.abs(this._slipYaw);
+    if (off < 0.012) {
+      this._slip[0] = this._slip[1] = this._slipYaw = 0;
+      return false;
+    }
+    this._scrambleIn -= dt;
+    if (this._scrambleIn <= 0) {
+      this._scrambleIn = this.rng.uniform(0.08, 0.16);
+      const k = this.rng.uniform(0.4, 0.7);
+      this._slip[0] *= k;
+      this._slip[1] *= k;
+      this._slipYaw *= k;
+    }
+    return off > 0.03;
+  }
+
+  _unlink() {
+    const other = this.mate;
+    this.mate = null;
+    this.mateRole = null;
+    this._pair = null;
+    if (other && other.mate === this) {
+      other.mate = null;
+      other.mateRole = null;
+      other._pair = null;
+    }
+  }
+
+  /** Done: the one on top flies off, the other cleans itself. */
+  _part() {
+    const top = this.mateRole === 'top' ? this : this.mate;
+    const bottom = top.mate;
+    top._unlink();
+    top._enter(LAUNCH);
+    bottom._enter(GROOM_HIND);
+  }
+
+  /** The spider has taken the one on top. */
+  _bereave(spider) {
+    this._enter(MOURN);
+    this._mourn = spider;
+    this._mournPhase = null;
+    this._mournNext('startle');
+  }
+
+  _mournNext(phase) {
+    const rng = this.rng;
+    this._mournPhase = phase;
+    this._mournT = 0;
+    // Durations: a scuttle out from under the spider, a turn to face it, a
+    // long look, a few steps after it, and a pause before going on.
+    this._mournDur = {
+      startle: rng.uniform(0.25, 0.4),
+      turn: 1.6,
+      watch: rng.uniform(1.4, 2.6),
+      step: rng.uniform(0.4, 0.8),
+      pause: rng.uniform(0.9, 1.8),
+    }[phase];
+    this._blendFrom = this.pose.feet.map((f) => [...f]);
+    this._blendLift = [...this.pose.lift];
+    this._blendT = 0;
+    this._blendTime = 0.15;
+    if (phase === 'startle' || phase === 'turn' || phase === 'step') this._reseedFeet();
+  }
+
+  /**
+   * Walk and turn towards a point together, the legs stepping for the turn
+   * as well as the travel: a fly turning on the spot still has to step.
+   */
+  _stepToward(tx, ty, speedMm, turnRate, dt) {
+    const want = Math.atan2(ty - this.y, tx - this.x);
+    const before = this.heading;
+    this.heading = turnTowards(this.heading, want, turnRate * dt);
+    const turned = Math.abs(wrap(this.heading - before));
+    const step = speedMm * this.pxPerMm * dt;
+    this.x += Math.cos(this.heading) * step;
+    this.y += Math.sin(this.heading) * step;
+    const stridePx = STRIDE * this.length;
+    this.gaitPhase = (this.gaitPhase + (step + turned * 0.45 * this.length) / stridePx) % 1;
+    this._updateGait();
+  }
+
+  /** Turn the head towards a point, as far as a neck allows. */
+  _look(x, y) {
+    this.pose.headYaw = clamp(wrap(Math.atan2(y - this.y, x - this.x) - this.heading), -0.35, 0.35);
+  }
+
+  /**
+   * Courtship, from the side of the fly that will mount (COURT).  It walks
+   * up and stops a little way off; when the other has turned to face it, the
+   * two look each other over for a moment.  Then they settle who goes on top
+   * -- either may -- and the one to be mounted turns its back.  The other
+   * closes in from behind and leaps on.
+   */
+  _updateCourt(dt) {
+    const m = this.mate;
+    const c = this._court;
+    if (!m || m.hidden || m.state !== AWAIT || !c || this.stateT >= this.stateDur) {
+      this._enter(WALK);
+      return;
+    }
+    const d = Math.hypot(m.x - this.x, m.y - this.y);
+    const L = this.length;
+    c.t += dt;
+    if (c.phase === 'approach') {
+      this._stepToward(m.x, m.y, this.walkSpeed, 5, dt);
+      if (d < STARE_L * L) this._courtNext('face');
+    } else if (c.phase === 'face') {
+      this._stepToward(m.x, m.y, 0, 4, dt);
+      if ((this._faces(m) && m._faces(this)) || c.t > 3) {
+        this._courtNext('stare');
+        c.stareFor = this.rng.uniform(STARE_TIME[0], STARE_TIME[1]);
+      }
+    } else if (c.phase === 'stare') {
+      this._stepToward(m.x, m.y, 0, 4, dt);
+      this.pose.headYaw = 0.1 * Math.sin(c.t * 3.1);
+      if (c.t >= c.stareFor) {
+        this._courtNext('present');
+        if (this.rng.random() < 0.5) {
+          // The other one goes on top: the two swap parts.
+          this._enter(AWAIT);
+          m._enter(COURT);
+        }
+      }
+    } else if (c.phase === 'present') {
+      // Watch the other turn its back.
+      this._stepToward(m.x, m.y, 0, 4, dt);
+      if (m._facesAway(this) || c.t > 3) this._courtNext('close');
+    } else {
+      this._stepToward(m.x, m.y, this.walkSpeed * 0.7, 5, dt);
+      if (d < 1.15 * L) this._enter(MOUNT);
+    }
+  }
+
+  /** The one to be mounted (AWAIT): face the other, then turn its back. */
+  _updateAwait(dt) {
+    const m = this.mate;
+    const c = this._court;
+    if (!m || !c || (m.state !== COURT && m.state !== MOUNT) || this.stateT >= this.stateDur) {
+      this._enter(IDLE);
+      return;
+    }
+    if (c.phase === 'present' || c.phase === 'close') {
+      // Turned away: aim at the point directly away from the other.
+      this._stepToward(2 * this.x - m.x, 2 * this.y - m.y, 0, 3, dt);
+    } else {
+      this._stepToward(m.x, m.y, 0, 3.5, dt);
+      if (c.phase === 'stare') this.pose.headYaw = -0.1 * Math.sin(c.t * 3.1 + 0.8);
+    }
+  }
+
+  /** Back turned to `other`, near enough. */
+  _facesAway(other, within = 0.3) {
+    return Math.abs(wrap(Math.atan2(this.y - other.y, this.x - other.x) - this.heading)) < within;
+  }
+
+  _courtNext(phase) {
+    this._court.phase = phase;
+    this._court.t = 0;
+  }
+
+  _updateMount(dt) {
+    const m = this.mate;
+    if (!m || m.hidden) {
+      this._enter(LAUNCH);
+      return;
+    }
+    const u = Math.min(1, this.stateT / this.stateDur);
+    const k = smoothstep(u);
+    const back = TOP_BACK * m.length;
+    const tx = m.x - Math.cos(m.heading) * back;
+    const ty = m.y - Math.sin(m.heading) * back;
+    const [fx, fy, fh] = this._mountFrom;
+    this.x = fx + (tx - fx) * k;
+    this.y = fy + (ty - fy) * k;
+    this.heading = fh + wrap(m.heading - fh) * k;
+    this.height = TOP_HEIGHT * k + 0.5 * Math.sin(Math.PI * u);
+    const p = this.pose;
+    [p.feet, p.lift] = this._poseRider(0, false);
+    p.wingSpread = 1;
+    p.wingBlur = 1;
+    if (u >= 1) this._beginMating();
+  }
+
+  /** Legs of the one on top, clasping the other: front legs on its head,
+   * middle legs round its thorax, hind legs down its abdomen. */
+  _poseRider(t, drum, flail = false) {
+    const feet = [
+      [0.68, -0.10], [0.68, 0.10],
+      [0.32, -0.27], [0.32, 0.27],
+      [-0.16, -0.33], [-0.16, 0.33],
+    ];
+    if (drum) {
+      for (const i of [0, 1]) feet[i][0] += 0.05 * Math.sin(t * 50 + i * 2.1);
+    }
+    if (flail) {
+      // Scrambling for a grip.
+      feet.forEach((f, i) => {
+        f[0] += 0.07 * Math.sin(t * 31 + i * 1.7);
+        f[1] += 0.07 * Math.sin(t * 27 + i * 2.3);
+      });
+    }
+    return [feet.map((f, i) => this._clampToReach(i, f[0], f[1])), [1, 1, 1, 1, 1, 1]];
+  }
+
+  _updateMate(dt) {
+    const p = this.pose;
+    const m = this.mate;
+    if (!m || m.hidden) {
+      const wasTop = this.mateRole === 'top';
+      this._unlink();
+      this._enter(wasTop ? LAUNCH : IDLE);
+      return null;
+    }
+    const pair = this._pair;
+    if (this.mateRole === 'bottom') {
+      pair.t += dt;
+      if (pair.t >= pair.dur) {
+        if (pair.phase === 'tussle') {
+          pair.phase = 'copula';
+          pair.t = 0;
+          pair.dur = this.rng.uniform(MATE_TIME[0], MATE_TIME[1]);
+        } else {
+          this._part();
+          return null;
+        }
+      }
+      this.height = 0;
+      this._feelPointer();
+      let [feet, lift] = this._poseIdle(this.stateT);
+      if (pair.phase === 'tussle') {
+        // Hind legs kicking up at the one on top, wings buzzing in bursts.
+        for (const [i, sgn] of [[4, -1], [5, 1]]) {
+          const w = this.stateT * 19 + (sgn > 0 ? 1.3 : 0);
+          feet[i] = this._clampToReach(i, -0.30 + 0.07 * Math.sin(w), sgn * (0.30 - 0.06 * Math.cos(w)));
+          lift[i] = 1;
+          p.over[i] = 1;
+        }
+        const buzz = Math.max(0, Math.sin(this.stateT * 6.5));
+        p.wingBlur = 0.7 * buzz;
+        p.wingSpread = 0.6 * buzz;
+      }
+      return [feet, lift];
+    }
+    // On top: carried wherever the other goes.
+    this._feelPointer();
+    const scrambling = this._regainPlace(dt);
+    this._ride();
+    this.heading = m.heading + this._slipYaw + 0.04 * Math.sin(this.stateT * 1.3);
+    // In copula it strokes the other's head now and then; in the tussle it
+    // drums on it.
+    const drum = pair.phase === 'tussle' || Math.sin(this.stateT * 2.1) > 0.75;
+    this._wingOpenTarget[0] = this._wingOpenTarget[1] = 0.3;
+    // The abdomen, bent down to the other's, works from side to side in
+    // bouts.
+    const bout = Math.max(0, Math.sin(this.stateT * 0.8 + 1));
+    p.abdomenBend = 0.13 * Math.sin(this.stateT * 15) * (0.25 + 0.75 * bout);
+    if (scrambling) {
+      const buzz = Math.max(0, Math.sin(this.stateT * 17));
+      p.wingBlur = 0.55 * buzz;
+      p.wingSpread = 0.4 * buzz;
+    }
+    return this._poseRider(this.stateT, drum, scrambling);
+  }
+
+  _updateMourn(dt) {
+    const sp = this._mourn;
+    const p = this.pose;
+    this._mournT += dt;
+    const done = this._mournT >= this._mournDur;
+    const ph = this._mournPhase;
+    this.height = 0;
+    if (ph === 'startle') {
+      // Out from under the spider, fast.
+      const ax = 2 * this.x - sp.x;
+      const ay = 2 * this.y - sp.y;
+      this._stepToward(ax, ay, 45 * this.speedScale, 12, dt);
+      if (done) this._mournNext('turn');
+    } else if (ph === 'turn') {
+      this._stepToward(sp.x, sp.y, 0, 3.5, dt);
+      const off = Math.abs(wrap(Math.atan2(sp.y - this.y, sp.x - this.x) - this.heading));
+      if (off < 0.12 || done) this._mournNext('watch');
+    } else if (ph === 'step') {
+      this._stepToward(sp.x, sp.y, 9 * this.speedScale, 3, dt);
+      if (done) this._mournNext('pause');
+    } else {
+      // Watching, or hesitating: still, head following the spider.
+      [p.feet, p.lift] = this._poseIdle(this._mournT);
+      this._look(sp.x, sp.y);
+      if (done) {
+        if (ph === 'watch') this._mournNext('step');
+        else this._enter(FOLLOW);
+      }
+    }
+  }
+
+  _updateFollow(dt) {
+    const sp = this._mourn;
+    const L = this.length;
+    const gap = Math.hypot(sp.x - this.x, sp.y - this.y);
+    // Keep a little way behind while the spider is still in view.
+    const speed = sp.visible && gap < 2.5 * L ? 0 : this.walkSpeed;
+    this._stepToward(sp.x, sp.y, speed, 4, dt);
+    this.height = 0;
+    if (this.world.distanceTo(this.x, this.y) > 1.3 * L) {
+      // Gone over the edge after it.  Another fly turns up in time.
+      const [lo, hi] = sp.respawnDelay ?? [10, 60];
+      this._mourn = null;
+      this.hidden = true;
+      this.respawnIn = this.rng.uniform(lo, hi);
+    } else if (this.stateT >= this.stateDur) {
+      this._enter(WALK);
     }
   }
 
@@ -954,7 +1476,7 @@ export class Fly {
    */
   _digest(dt) {
     const iv = this.droppingInterval;
-    if (!iv || this.hidden || AIRBORNE.has(this.state)) return;
+    if (!iv || this.hidden || AIRBORNE.has(this.state) || this.height > 0.05) return;
     if (this._dropIn === null) this._dropIn = this.rng.uniform(iv[0], iv[1]);
     this._dropIn -= dt;
     if (this._dropIn > 0 || this.state === WALK) return;
@@ -996,6 +1518,26 @@ export class Fly {
         if (groomed) [p.feet, targetLift] = groomed;
         else this._nextGroundState();
       }
+    } else if (s === COURT) {
+      this._updateCourt(dt);
+      this._foldWings(p, dt);
+      this.height = 0;
+    } else if (s === AWAIT) {
+      this.height = 0;
+      this._foldWings(p, dt);
+      this._updateAwait(dt);
+    } else if (s === MOUNT) {
+      this._updateMount(dt);
+    } else if (s === MATE) {
+      this._foldWings(p, dt);
+      const posed = this._updateMate(dt);
+      if (posed) [p.feet, targetLift] = posed;
+    } else if (s === MOURN) {
+      this._foldWings(p, dt);
+      this._updateMourn(dt);
+    } else if (s === FOLLOW) {
+      this._foldWings(p, dt);
+      this._updateFollow(dt);
     } else if (s === LAUNCH) {
       const u = smoothstep(this.stateT / this.stateDur);
       [p.feet, targetLift] = this._poseLaunch(u);
@@ -1048,8 +1590,13 @@ export class Fly {
     this._digest(dt);
     // A wing let go by the grooming leg springs back, not snaps.
     const kw = Math.min(1, 24 * dt);
-    p.wingOpen[0] += (wingOpen[0] - p.wingOpen[0]) * kw;
-    p.wingOpen[1] += (wingOpen[1] - p.wingOpen[1]) * kw;
+    // A wing pushed aside by the pointer springs back too, a little slower.
+    const kp = Math.exp(-7 * dt);
+    for (const k of [0, 1]) {
+      this._wingEase[k] += (wingOpen[k] - this._wingEase[k]) * kw;
+      this._wingPush[k] *= kp;
+      p.wingOpen[k] = this._wingEase[k] + this._wingPush[k];
+    }
 
     // Cross-fade limb positions through state changes so nothing snaps.
     if (this._blendT < 1) {

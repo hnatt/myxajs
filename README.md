@@ -75,6 +75,8 @@ which only take effect on a fresh `start`.
 | `behaviour` | see below | what a fly on the ground does next, as relative weights |
 | `stray` | `true` | a walking fly may wander part-way off the edge of the page |
 | `excursions` | `true` | a flying fly now and then leaves the page for a moment |
+| `mating` | `true` | flies that meet on foot sometimes mate |
+| `matingChance` | `0.1` | chance that a meeting of two flies on foot turns into mating; tripled when they are the only two on the page |
 | `droppings` | `true` | flies leave droppings, which stay until the pointer rubs them off; `false` also clears any there are |
 | `droppingInterval` | `[20, 90]` | seconds a fly spends on the ground between droppings |
 | `maxDroppings` | `200` | most droppings kept at once; past this the oldest go |
@@ -166,6 +168,34 @@ distance:
 
 `shyness` scales all of these distances; `cursor: false` turns the fear off.
 
+**Other flies.** With more than one fly, they keep out of each other's way on
+foot: a walking fly veers round one in its path, and two bodies never overlap.
+In the air they ignore each other, since they may be at different heights.
+When two flies meet on foot and at least one of them is walking, there is a
+one-in-ten chance (`matingChance`) that they mate, and three times that when
+they are the only two flies on the page. Each meeting gets one roll; they
+have to part and meet again for another. One fly walks up and stops a little
+way off. The other turns round to face it, and the two stare at each other
+for a moment. Then they settle which goes on top; either may. The other turns
+its back, and the one going on top closes in from behind and leaps on. The rider sits set back, with its
+head over the other's thorax. The pair opens with a short tussle: the fly
+underneath kicks up with its hind legs and buzzes its wings, while the one on
+top drums on its head. Then they stay in copula for 20–45 seconds. The rider
+works its abdomen from side to side in bouts and now and then strokes the
+other's head. (House flies take about an hour; a
+page cannot wait that long.) At the end the rider flies off, and the other
+cleans its abdomen. A mating pair is too busy to flee the pointer, but the
+pointer can touch them. Brushed across, their wings are pushed aside and
+spring back. A shove knocks the rider off its place on the other's back, and
+it scrambles back in a few quick jerks, legs flailing and wings buzzing.
+
+A pair in copula ignores the spider, so a leap at it cannot miss, and the
+spider takes the fly on top. The one underneath scuttles out from under the
+spider, turns round to watch it carry off its mate, and takes a few steps
+after it. It hesitates, then follows the spider off the page on foot.
+Afterwards the spider is not hungry for 15–30 seconds, so it does not eat the
+follower too.
+
 **Droppings.** House flies leave two kinds of mark. Fly specks are faeces:
 dark, round, slightly raised dots half a millimetre to a millimetre across.
 Now and then there is a paler, larger spot of regurgitate, which dries with a
@@ -244,7 +274,8 @@ npm run demo         # then open http://localhost:8000/demo/
 npm run check:browser -- http://localhost:8000/demo/   # end-to-end check in headless Chromium
 ```
 
-The demo page has live controls for most options, and an inspection box: a
+The demo page has live controls for most options, kept in `localStorage`
+across reloads, and an inspection box: a
 separate arena where the camera rides on the fly or the spider, so the animal
 stays put and the ground moves under it. It has a behaviour picker, slow
 motion, and two camera modes, *north up* (the animal turns) and *heading up*
@@ -263,6 +294,7 @@ the fly, focus is never taken, and the frame cost stays low.
 | `src/fly-render.js` | the fly, drawn in Canvas 2D |
 | `src/spider.js` | the spider's edge patrol, stalk, pounce and capture |
 | `src/spider-render.js` | the spider, with cached fur |
+| `src/flock.js` | flies among flies: keeping apart on foot, meeting and mating |
 | `src/droppings.js` | droppings, and how the pointer smudges and wipes them |
 | `src/droppings-render.js` | droppings drawn, and the offscreen layer that keeps them |
 | `src/overlay.js` | the click-through canvas and dirty-rect clearing |

@@ -18,6 +18,7 @@
   }
   main { max-width: 40rem; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
   h1 { font-size: 2.4rem; margin: 0 0 .2rem; letter-spacing: -.01em; }
+  .ipa { margin: 0 0 .6rem; color: #8a7a62; font-size: 1.05rem; letter-spacing: .02em; }
   .lede { color: #6b5f50; margin-top: 0; }
   .repo { display: inline-block; margin-left: .3rem; color: #2b2620; font-size: .9em; }
   code { font: 14px ui-monospace, Menlo, Consolas, monospace; background: #e9e1d3; padding: .1em .3em; border-radius: 3px; }
@@ -41,12 +42,13 @@
   #panel input[type=range] { min-width: 0; width: 100%; margin: 0; }
   #panel output { text-align: right; font-variant-numeric: tabular-nums; color: #6b5f50; }
   #panel .row { display: flex; gap: .4rem; margin-top: .6rem; }
-  #panel .row button { flex: 1; font: inherit; padding: .25rem; border: 1px solid #b9ad99; border-radius: 4px; background: #f4efe6; cursor: pointer; }
+  #panel .row button { flex: 1; min-width: 0; font: inherit; padding: .25rem; border: 1px solid #b9ad99; border-radius: 4px; background: #f4efe6; cursor: pointer; }
   #stats { margin-top: .5rem; color: #6b5f50; font-variant-numeric: tabular-nums; }
 
   #lens { margin: 1.2rem 0 0; }
   #lens canvas { display: block; width: 100%; height: 22rem; border-radius: 6px; border: 1px solid #cfc3ae; }
-  #lens-status { min-height: 1.6em; margin: .4rem 0 .6rem; color: #6b5f50; font-style: italic; font-variant-numeric: tabular-nums; }
+  /* Two lines tall whatever it says, so the controls below never jump. */
+  #lens-status { height: 3.2em; line-height: 1.6; overflow: hidden; margin: .4rem 0 .6rem; color: #6b5f50; font-style: italic; font-variant-numeric: tabular-nums; }
   .lens-controls { display: grid; grid-template-columns: 6.5rem 1fr; gap: .45rem .8rem; align-items: center; font: 14px/1.4 system-ui, sans-serif; }
   .lens-controls > span { color: #6b5f50; }
   .seg { justify-self: start; display: inline-flex; flex-wrap: wrap; border: 1px solid #b9ad99; border-radius: 4px; overflow: hidden; }
@@ -66,12 +68,17 @@
 <body>
 <main>
   <h1>Myxa.js</h1>
-  <p class="lede">A house fly on your page. And something on the edges, watching it.
+  <p class="ipa" lang="uk-fonipa" title="муха js">/ˈmuxɐ ˌdʒeɪˈɛs/</p>
+  <p class="lede">A house fly for your home page.
   <a class="repo" href="https://github.com/hnatt/myxajs">Source and docs on GitHub</a></p>
 
   <p>The fly walks, stops to rub its front feet together, cleans its wings with a hind
   leg, takes off, darts across the page and lands somewhere else. Bring the pointer
   near it and it hurries off; move at it quickly and it takes off before you get close.</p>
+
+  <p>With more than one fly about (try the <em>flies</em> slider), they keep out of each
+  other's way on foot, and now and then two that meet will mate. A pair in copula is an
+  easy target for the spider.</p>
 
   <p>Leave it long enough and it leaves its mark: little dark specks, now and then a
   paler spot. They stay until you scrub them off with the pointer, which smudges them
@@ -134,12 +141,14 @@
           <option value="groomHind">Groom abdomen</option>
           <option value="groomWing">Groom wings</option>
           <option value="fly">Fly</option>
+          <option value="mate">Mate</option>
         </select>
         <div class="buttons" id="lens-spider-actions" hidden>
           <button type="button" data-state="lurk">Lurk</button>
           <button type="button" data-state="patrol">Patrol</button>
           <button type="button" data-state="hide">Hide</button>
           <button type="button" id="lens-drop">Drop a fly in front of it</button>
+          <button type="button" id="lens-drop-pair">Drop a mating pair</button>
         </div>
       </div>
 
@@ -177,10 +186,12 @@
   <label class="check"><input type="checkbox" id="cursor" checked> afraid of the pointer</label>
   <label class="check"><input type="checkbox" id="shadow" checked> shadows</label>
   <label class="check"><input type="checkbox" id="droppings" checked> droppings</label>
+  <label class="check"><input type="checkbox" id="mating" checked> mating</label>
   <label class="check"><input type="checkbox" id="highDetail"> force high detail</label>
   <div class="row">
     <button type="button" id="pause">Pause</button>
     <button type="button" id="restart">Restart</button>
+    <button type="button" id="defaults" title="Put every option back to its default">Defaults</button>
   </div>
   <div id="stats"></div>
 </aside>
@@ -189,23 +200,65 @@
   import { Myxa, DEFAULTS } from '../src/index.js';
   import { Inspector } from './inspector.js';
 
-  let toy = Myxa.start({ ignoreReducedMotion: true });
-  window.toy = toy;
-
+  // The panel's settings are kept in localStorage, so they survive a reload.
+  const STORE = 'myxa-demo-options';
   const numeric = ['flies', 'speed', 'flySizeMm', 'spiderSizeMm', 'shyness', 'fps'];
+  const toggles = ['spider', 'cursor', 'shadow', 'droppings', 'mating'];
+  const panelKeys = [...numeric, ...toggles, 'detail'];
+  function loadSaved() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORE) || '{}');
+      return Object.fromEntries(Object.entries(saved).filter(([k]) => panelKeys.includes(k)));
+    } catch {
+      return {}; // storage blocked, or something unreadable in it
+    }
+  }
+  function save() {
+    const o = toy.options;
+    const changed = panelKeys.filter((k) => o[k] !== DEFAULTS[k]).map((k) => [k, o[k]]);
+    try {
+      if (changed.length) localStorage.setItem(STORE, JSON.stringify(Object.fromEntries(changed)));
+      else localStorage.removeItem(STORE);
+    } catch { /* storage blocked: the settings just won't last */ }
+  }
+  /** Put the panel's controls in step with a set of options. */
+  function showOptions(o) {
+    for (const id of numeric) {
+      const input = document.getElementById(id);
+      input.value = o[id];
+      input.parentElement.querySelector('output').textContent = input.value;
+    }
+    for (const id of toggles) document.getElementById(id).checked = o[id];
+    document.getElementById('highDetail').checked = o.detail === 'high';
+  }
+
+  let toy = Myxa.start({ ...loadSaved(), ignoreReducedMotion: true });
+  window.toy = toy;
+  showOptions(toy.options);
+
   for (const id of numeric) {
     const input = document.getElementById(id);
     const out = input.parentElement.querySelector('output');
-    const show = () => { out.textContent = input.value; };
-    show();
-    input.addEventListener('input', () => { show(); toy.set({ [id]: Number(input.value) }); });
+    input.addEventListener('input', () => {
+      out.textContent = input.value;
+      toy.set({ [id]: Number(input.value) });
+      save();
+    });
   }
-  for (const id of ['spider', 'cursor', 'shadow', 'droppings']) {
+  for (const id of toggles) {
     const input = document.getElementById(id);
-    input.addEventListener('change', () => toy.set({ [id]: input.checked }));
+    input.addEventListener('change', () => { toy.set({ [id]: input.checked }); save(); });
   }
   document.getElementById('highDetail').addEventListener('change', (e) => {
     toy.set({ detail: e.target.checked ? 'high' : 'auto' });
+    save();
+  });
+  document.getElementById('defaults').addEventListener('click', () => {
+    const d = Object.fromEntries(panelKeys.map((k) => [k, DEFAULTS[k]]));
+    toy.set(d);
+    showOptions(toy.options);
+    save();
+    updateSnippets();
   });
   document.getElementById('pause').addEventListener('click', (e) => {
     if (toy.paused) { toy.resume(); e.target.textContent = 'Pause'; }
@@ -220,7 +273,7 @@
 
   // The embedding snippets, kept in step with the panel: only options that
   // differ from the defaults are spelled out.
-  const SHOWN = ['flies', 'speed', 'flySizeMm', 'spiderSizeMm', 'shyness', 'fps', 'spider', 'cursor', 'shadow', 'droppings', 'detail'];
+  const SHOWN = ['flies', 'speed', 'flySizeMm', 'spiderSizeMm', 'shyness', 'fps', 'spider', 'cursor', 'shadow', 'droppings', 'mating', 'detail'];
   const kebab = (k) => k.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase());
   const scriptUrl = new URL('../dist/myxa.min.js', location.href).href;
   const moduleUrl = new URL('../dist/myxa.esm.js', location.href).href;
@@ -266,6 +319,7 @@
     b.addEventListener('click', () => lens.setSpiderState(b.dataset.state));
   }
   document.getElementById('lens-drop').addEventListener('click', () => lens.dropFly());
+  document.getElementById('lens-drop-pair').addEventListener('click', () => lens.dropPair());
   document.getElementById('lens-pause').addEventListener('click', (e) => {
     const paused = lens.togglePause();
     e.target.textContent = paused ? 'Play' : 'Pause';

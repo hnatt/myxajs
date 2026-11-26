@@ -34,6 +34,10 @@ export const CARRY_AT = 0.48;
 export const RESPAWN_DELAY = [10, 60];
 
 const SIGHT_MM = 320; // salticid eyesight is extraordinary for its size
+/** Seconds after a meal before it hunts again.  A spider that has just fed is
+ * not hungry; without this it would eat a fly that wanders up to it while it
+ * is still digesting, such as one following its lost mate. */
+const SATED = [15, 30];
 const POUNCE_MM = 62; // about seven body lengths, a realistic salticid leap
 const CATCH_L = 0.42; // body lengths: close enough to seize the fly
 export const BAND_L = 2.2; // never walks further in from an edge than this
@@ -174,6 +178,7 @@ export class Spider {
     this._leapTo = null;
     this._freeze = 0;
 
+    this._sated = 0; // seconds until it is hungry again
     this.state = LURK;
     this.stateT = 0;
     this.stateDur = rng.uniform(1, 3);
@@ -349,6 +354,7 @@ export class Spider {
     const fly = this.carried;
     this.carried = null;
     if (fly) fly.release(this.rng.uniform(this.respawnDelay[0], this.respawnDelay[1]));
+    this._sated = this.rng.uniform(SATED[0], SATED[1]);
   }
 
   /** Somewhere just over the nearest edge to a point, out of sight. */
@@ -440,6 +446,7 @@ export class Spider {
   // -- prey -------------------------------------------------------------
   /** The nearest fly it can actually see, or null. */
   _quarry() {
+    if (this._sated > 0) return null;
     let best = null;
     let bestD = SIGHT_MM * this.world.pxPerMm;
     for (const fly of this.prey) {
@@ -450,6 +457,8 @@ export class Spider {
         bestD = d;
       }
     }
+    // A mating pair is one target, and it is the one on top that gets taken.
+    if (best && best.mateRole === 'bottom' && best.mate && !best.mate.hidden) best = best.mate;
     return best;
   }
 
@@ -768,6 +777,7 @@ export class Spider {
     dt = Math.min(dt, 0.05);
     this.stateT += dt;
     this._legDt = dt;
+    this._sated = Math.max(0, this._sated - dt);
     const p = this.pose;
 
     // Only a leap may take it into open page.  If anything else has left it
@@ -856,7 +866,7 @@ export class Spider {
         if (caught || t >= 1) {
           this.height = 0;
           if (caught) {
-            fly.caught();
+            fly.caught(this);
             this.carried = fly;
             this._enter(SEIZE);
           } else {
