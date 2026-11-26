@@ -8,7 +8,7 @@
 // Proportions (head 0.21, thorax 0.35, abdomen 0.44 of body length, thorax
 // width 0.37) and colours are measured from a reference photograph.
 
-import { LEGS } from './fly-geometry.js';
+import { LEGS, WING_BASE, WING_LEN, WING_REST_ANGLE, WING_OUT_ANGLE } from './fly-geometry.js';
 
 const TAU = Math.PI * 2;
 
@@ -28,11 +28,7 @@ const LEG_LIT = [0.300, 0.310, 0.345];
 const VEIN = [0.300, 0.300, 0.345];
 const TARSUS = [0.520, 0.500, 0.280]; // the pale yellowish feet
 
-const WING_BASE = [0.05, 0.10];
-const WING_LEN = 0.84;
 const WING_HALFW = 0.280;
-const WING_REST_ANGLE = (143 * Math.PI) / 180; // swept back in a V over the abdomen
-const WING_OUT_ANGLE = (118 * Math.PI) / 180;
 const WING_BEAT_MID = (112 * Math.PI) / 180;
 const WING_BEAT_AMP = (33 * Math.PI) / 180;
 /** The wing tint, averaged along its length, for the beating-wing ghosts. */
@@ -207,7 +203,12 @@ export function ik(coxa, foot, femur, tibia, sign) {
   return [coxa[0] + femur * Math.cos(ang), coxa[1] + femur * Math.sin(ang)];
 }
 
-function drawLeg(ctx, idx, foot, lift, detail) {
+/**
+ * One leg.  With `onTop`, only the tibia and tarsus: the part of a grooming
+ * leg that lies across the eyes, the wings or the abdomen, drawn again after
+ * the body so it is seen on top.
+ */
+function drawLeg(ctx, idx, foot, lift, detail, onTop = false) {
   const [coxa, , femur, tibia, tarsus, kneeSign] = LEGS[idx];
   const lat = idx % 2 ? 1 : -1;
   // Solve the two long bones to the ankle so the tarsus stays flat.
@@ -221,11 +222,13 @@ function drawLeg(ctx, idx, foot, lift, detail) {
   const col = rgb(mix(LEG, LEG_LIT, 0.25 + 0.5 * lift));
   const thick = 1 + 0.15 * lift;
   ctx.strokeStyle = col;
-  ctx.lineWidth = 0.017 * thick;
-  ctx.beginPath();
-  ctx.moveTo(coxa[0], coxa[1]);
-  ctx.lineTo(knee[0], knee[1]);
-  ctx.stroke();
+  if (!onTop) {
+    ctx.lineWidth = 0.017 * thick;
+    ctx.beginPath();
+    ctx.moveTo(coxa[0], coxa[1]);
+    ctx.lineTo(knee[0], knee[1]);
+    ctx.stroke();
+  }
   ctx.lineWidth = 0.012 * thick;
   ctx.beginPath();
   ctx.moveTo(knee[0], knee[1]);
@@ -308,8 +311,12 @@ function drawWings(ctx, g, pose, detail) {
     }
     return;
   }
-  const angle = WING_REST_ANGLE + (WING_OUT_ANGLE - WING_REST_ANGLE) * pose.wingSpread;
-  for (const sign of [-1, 1]) drawWing(ctx, g, sign, angle, 0.5, detail);
+  // A wing being groomed is pushed out and drawn back on its own.
+  const span = WING_OUT_ANGLE - WING_REST_ANGLE;
+  for (const [sign, k] of [[-1, 0], [1, 1]]) {
+    const angle = WING_REST_ANGLE + span * (pose.wingSpread + pose.wingOpen[k]);
+    drawWing(ctx, g, sign, angle, 0.5, detail);
+  }
 }
 
 function drawBody(ctx, g, pose) {
@@ -439,5 +446,8 @@ export function drawFly(ctx, scale, heading, pose, dpr = 1, detailMode = 'auto')
   for (let i = 0; i < pose.feet.length; i++) drawLeg(ctx, i, pose.feet[i], pose.lift[i] ?? 0, detail);
   drawBody(ctx, g, pose);
   drawWings(ctx, g, pose, detail);
+  for (let i = 0; i < pose.feet.length; i++) {
+    if (pose.over[i]) drawLeg(ctx, i, pose.feet[i], pose.lift[i] ?? 0, detail, true);
+  }
   ctx.restore();
 }

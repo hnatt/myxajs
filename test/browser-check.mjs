@@ -60,12 +60,13 @@ try {
   for (let i = 0; i < 100; i++) {
     await sleep(100);
     try {
-      if (await evaluate(`!!(window.toy && window.toy.running && document.querySelector('canvas'))`)) break;
+      if (await evaluate(`!!(window.toy && window.toy.running && window.toy.overlay)`)) break;
     } catch { /* page still loading */ }
   }
   await sleep(300);
 
-  const canvas = await evaluate(`(() => { const c = document.querySelector('canvas');
+  // The toy's own overlay: the demo page has a canvas of its own as well.
+  const canvas = await evaluate(`(() => { const c = toy.overlay.canvas;
     const s = getComputedStyle(c);
     return { pe: s.pointerEvents, pos: s.position, z: s.zIndex, aria: c.getAttribute('aria-hidden'),
              tab: c.tabIndex, w: c.width, h: c.height, cw: c.clientWidth, ch: c.clientHeight }; })()`);
@@ -134,8 +135,8 @@ try {
     const img = await send('Page.captureScreenshot', { format: 'png' });
     writeFileSync(shot, Buffer.from(img.result.data, 'base64'));
   }
-  const stopped = await evaluate(`(() => { toy.stop(); return document.querySelectorAll('canvas').length; })()`);
-  check('stop() removes the overlay', stopped === 0, String(stopped));
+  const stopped = await evaluate(`(() => { const c = toy.overlay.canvas; toy.stop(); return c.isConnected; })()`);
+  check('stop() removes the overlay', stopped === false, String(stopped));
   // The one-tag build, and respect for prefers-reduced-motion.
   const base = new URL('.', url).href;
   await send('Page.navigate', { url: `${base}script-tag.html` });

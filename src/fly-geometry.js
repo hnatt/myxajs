@@ -44,6 +44,14 @@ export const TUCKED = [
 export const TRIPOD_A = [0, 3, 4];
 export const TRIPOD_B = [1, 2, 5];
 
+/** The wings: where they hinge on the thorax, their length, and the angle
+ * each makes with the body axis folded at rest and spread out.  Shared so the
+ * hind legs can find a wing to groom. */
+export const WING_BASE = [0.05, 0.10];
+export const WING_LEN = 0.84;
+export const WING_REST_ANGLE = (143 * Math.PI) / 180; // swept back in a V over the abdomen
+export const WING_OUT_ANGLE = (118 * Math.PI) / 180;
+
 /** Everything the renderer needs to draw one frame of one fly. */
 export function makePose(feet, lift) {
   return {
@@ -53,6 +61,9 @@ export function makePose(feet, lift) {
     wingBlur: 0, // 0 = still, 1 = beating
     wingPhase: 0,
     headYaw: 0,
+    wingOpen: [0, 0], // per-side extra spread, left and right, in units of
+    // (out - rest): a groomed wing is pushed out and then drawn back
+    over: [0, 0, 0, 0, 0, 0], // legs whose tibia lies on top of the body or wings
     abdomenBend: 0,
     bodySquash: 1, // crouch before take-off
     height: 0, // body lengths above the surface

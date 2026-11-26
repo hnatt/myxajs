@@ -268,10 +268,13 @@ test('stray: false keeps a walking fly on the page', () => {
 
 test('excursions: false keeps flight closer to the page', () => {
   const w = world();
+  // Excursions come about once in twenty seconds of flight, so keep the fly
+  // in the air most of the time or the count is down to luck.
+  const behaviour = { walk: 0, groomFront: 0, groomHind: 0, groomWing: 0, idle: 0.2, takeOff: 1 };
   const offFor = (excursions) => {
     let far = 0;
     for (const seed of [0, 1, 2, 3]) {
-      const f = fly(seed, { excursions }, w);
+      const f = fly(seed, { excursions, behaviour }, w);
       for (let i = 0; i < 60 * 60 * 4; i++) {
         f.update(DT);
         if (f.state === 'flight' && w.distanceTo(f.x, f.y) > 4 * f.length) far++;
@@ -305,4 +308,81 @@ test('speed scales how fast it walks', () => {
     return d;
   };
   assert.ok(dist(2) > 1.5 * dist(1));
+});
+
+/** A fly set to one grooming state for `seconds`, calling `each` every frame. */
+function groom(state, seconds, each, seed = 4) {
+  const f = fly(seed, { cursor: false });
+  f._enter(state);
+  f.stateDur = 1e9;
+  for (let i = 0; i < seconds * 60; i++) {
+    f.update(DT);
+    each(f);
+  }
+  return f;
+}
+
+test('a grooming bout alternates between its acts', () => {
+  const plans = {
+    groom_front: ['rubFront', 'sweepHead'],
+    groom_hind: ['sweepAbdomen', 'rubHind'],
+    groom_wing: ['sweepWing', 'rubHind'],
+  };
+  for (const [state, acts] of Object.entries(plans)) {
+    const order = [];
+    groom(state, 12, (f) => {
+      if (order[order.length - 1] !== f.groomAct) order.push(f.groomAct);
+    });
+    assert.ok(order.length >= 4, `${state}: only ${order.join(', ')}`);
+    for (let i = 0; i < order.length; i++) assert.equal(order[i], acts[i % 2], `${state}: ${order.join(', ')}`);
+  }
+});
+
+test('the hind leg pushes the wing out, strokes it, and lets it spring back', () => {
+  let out = 0;
+  let back = 0;
+  let overWing = 0;
+  const sides = new Set();
+  const f = groom('groom_wing', 15, (g) => {
+    if (g.groomAct !== 'sweepWing') return;
+    sides.add(g.groomSide);
+    for (const k of [0, 1]) {
+      out = Math.max(out, g.pose.wingOpen[k]);
+      back = Math.min(back, g.pose.wingOpen[k]);
+    }
+    if (g.pose.over[4] || g.pose.over[5]) overWing++;
+  });
+  assert.ok(out > 0.3, `wing pushed out only ${out.toFixed(2)}`);
+  assert.ok(back < -0.2, `wing drawn back only ${back.toFixed(2)}`);
+  assert.ok(overWing > 0, 'the grooming leg never lay over the wing');
+  assert.ok(sides.has(-1) && sides.has(1), `groomed only sides ${[...sides]}`);
+  f._enter('walk');
+  for (let i = 0; i < 30; i++) f.update(DT);
+  for (const k of [0, 1]) assert.ok(Math.abs(f.pose.wingOpen[k]) < 0.02, 'the wing did not settle back');
+});
+
+test('a grooming fly stands on the legs it is not grooming with', () => {
+  for (const [state, busy] of [['groom_front', [0, 1]], ['groom_hind', [4, 5]]]) {
+    let lifted = 0;
+    let frames = 0;
+    groom(state, 8, (f) => {
+      if (f._blendT < 1) return;
+      frames++;
+      for (let i = 0; i < 6; i++) if (!busy.includes(i) && f.pose.lift[i] > 0.01) lifted++;
+    });
+    assert.ok(frames > 0);
+    assert.equal(lifted, 0, `${state}: a standing leg was off the ground`);
+  }
+});
+
+test('grooming feet stay within reach of their legs', () => {
+  for (const state of ['groom_front', 'groom_hind', 'groom_wing']) {
+    groom(state, 8, (f) => {
+      f.pose.feet.forEach(([x, y], i) => {
+        const [coxa, , femur, tibia, tarsus] = LEGS[i];
+        const d = Math.hypot(x - coxa[0], y - coxa[1]);
+        assert.ok(d <= femur + tibia + tarsus, `${state}: leg ${i} stretched to ${d.toFixed(3)}`);
+      });
+    });
+  }
 });

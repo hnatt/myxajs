@@ -133,6 +133,10 @@ var TUCKED = [
 ];
 var TRIPOD_A = [0, 3, 4];
 var TRIPOD_B = [1, 2, 5];
+var WING_BASE = [0.05, 0.1];
+var WING_LEN = 0.84;
+var WING_REST_ANGLE = 143 * Math.PI / 180;
+var WING_OUT_ANGLE = 118 * Math.PI / 180;
 function makePose(feet, lift) {
   return {
     feet: feet ?? LEGS.map((l) => [l[1][0], l[1][1]]),
@@ -143,6 +147,11 @@ function makePose(feet, lift) {
     // 0 = still, 1 = beating
     wingPhase: 0,
     headYaw: 0,
+    wingOpen: [0, 0],
+    // per-side extra spread, left and right, in units of
+    // (out - rest): a groomed wing is pushed out and then drawn back
+    over: [0, 0, 0, 0, 0, 0],
+    // legs whose tibia lies on top of the body or wings
     abdomenBend: 0,
     bodySquash: 1,
     // crouch before take-off
@@ -192,6 +201,26 @@ var STRIDE = 0.28;
 var SWING_DUTY = 0.45;
 var BLEND_TIME = 0.2;
 var LAUNCH_BLEND = 0.04;
+var GROOM_ACT = {
+  rubFront: [0.21, 3, 7],
+  sweepHead: [0.32, 2, 4],
+  sweepAbdomen: [0.42, 2, 4],
+  rubHind: [0.24, 3, 6],
+  sweepWing: [0.62, 2, 3]
+};
+var GROOM_PLAN = {
+  [GROOM_FRONT]: ["rubFront", "sweepHead"],
+  [GROOM_HIND]: ["sweepAbdomen", "rubHind"],
+  [GROOM_WING]: ["sweepWing", "rubHind"]
+};
+function stroke(u, contact, a, b, bowIn, bowOut) {
+  const on = u < contact;
+  const q = on ? 0.5 - 0.5 * Math.cos(Math.PI * u / contact) : (u - contact) / (1 - contact);
+  const [p0, p1, bow] = on ? [a, b, bowIn] : [b, a, bowOut];
+  const x = p0[0] + (p1[0] - p0[0]) * q;
+  const y = p0[1] + (p1[1] - p0[1]) * q + bow * Math.sin(Math.PI * q);
+  return [x, y, on];
+}
 var CURSOR_PANIC_MM = 9;
 var CURSOR_SCURRY_MM = 19;
 var CURSOR_AIR_MM = 26;
@@ -231,6 +260,10 @@ var Fly = class {
     this._swingFrom = [];
     this._prevLegPhase = [0, 0, 0, 0, 0, 0];
     this.pose = makePose();
+    this._wingOpenTarget = [0, 0];
+    this._act = null;
+    this.groomAct = null;
+    this.groomSide = 0;
     this._blendFrom = this.pose.feet.map((f) => [...f]);
     this._blendLift = [0, 0, 0, 0, 0, 0];
     this._blendT = 1;
@@ -518,6 +551,7 @@ var Fly = class {
       this.stateDur = rng.uniform(0.6, 2.6);
     } else if (state === GROOM_FRONT || state === GROOM_HIND || state === GROOM_WING) {
       this.stateDur = rng.uniform(1.4, 3.4);
+      this._act = null;
     } else if (state === LAUNCH) {
       this.stateDur = rng.uniform(0.045, 0.075);
     } else if (state === FLIGHT) {
@@ -761,38 +795,126 @@ var Fly = class {
   _poseGroundRest() {
     return [LEGS.map((l) => [l[1][0], l[1][1]]), [0, 0, 0, 0, 0, 0]];
   }
-  /** Front tarsi held up in front of the head and scrubbed together. */
-  _poseGroomFront(t) {
-    const [feet, lift] = this._poseGroundRest();
-    const r = Math.sin(t * 21);
-    for (const [i, sgn] of [[0, -1], [1, 1]]) {
-      feet[i] = [0.46 + 0.06 * r * sgn, sgn * (0.085 + 0.045 * r)];
-      lift[i] = 1;
+  // -- grooming -----------------------------------------------------------
+  //
+  // A grooming bout is a run of distinct acts, each a whole number of strokes,
+  // the way flies actually do it: the front legs alternately rub each other
+  // and sweep over the head; the hind legs sweep down the sides of the
+  // abdomen, reach up over a wing and stroke it out to the tip, and between
+  // those rub each other behind the body to shed the dust they collected.
+  // While the hind legs are up the fly stands on the other four, the middle
+  // pair braced wider; while the front legs are up, the middle pair steps
+  // forward under the head.
+  _startAct(name) {
+    const rng = this.rng;
+    const act = { name, t: 0, side: 0 };
+    const [period, lo, hi] = GROOM_ACT[name];
+    act.period = period * rng.uniform(0.9, 1.1);
+    act.dur = act.period * (lo + rng.randrange(hi - lo + 1));
+    if (name === "sweepWing") {
+      const prev = this._lastWingSide ?? (rng.random() < 0.5 ? 1 : -1);
+      act.side = rng.random() < 0.3 ? 0 : -prev;
+      if (act.side) this._lastWingSide = act.side;
     }
-    this.pose.headYaw = 0.05 * Math.sin(t * 7);
-    return [feet, lift];
+    this._act = act;
+    this.groomAct = name;
+    this.groomSide = act.side;
+    this._blendFrom = this.pose.feet.map((f) => [...f]);
+    this._blendLift = [...this.pose.lift];
+    this._blendT = 0;
+    this._blendTime = 0.16;
   }
-  /** Hind legs sweeping forward over the abdomen, alternating sides. */
-  _poseGroomHind(t) {
-    const [feet, lift] = this._poseGroundRest();
-    for (const [i, sgn] of [[4, -1], [5, 1]]) {
-      const ph = t * 6.5 + (i === 4 ? 0 : Math.PI);
-      const u = 0.5 - 0.5 * Math.cos(ph);
-      const rest = LEGS[i][1];
-      feet[i] = [rest[0] + 0.3 * u, sgn * (Math.abs(rest[1]) - 0.34 * u)];
-      lift[i] = u;
+  /** Pose for the current grooming act; advances through the bout. */
+  _poseGroom(dt) {
+    const plan = GROOM_PLAN[this.state];
+    if (!this._act) this._startAct(plan[0]);
+    const act = this._act;
+    act.t += dt;
+    if (act.t >= act.dur) {
+      if (this.stateT >= this.stateDur) return null;
+      const i = plan.indexOf(act.name);
+      this._startAct(plan[(i + 1) % plan.length]);
     }
-    this.pose.abdomenBend = 0.07 * Math.sin(t * 6.5);
-    return [feet, lift];
-  }
-  /** A hind leg stroked back along the wing membrane. */
-  _poseGroomWing(t) {
+    const a = this._act;
+    const u = a.t / a.period % 1;
+    const p = this.pose;
     const [feet, lift] = this._poseGroundRest();
-    const u = 0.5 - 0.5 * Math.cos(t * 4.5);
-    const [i, sgn] = Math.floor(t * 0.5) % 2 === 0 ? [4, -1] : [5, 1];
-    feet[i] = [-0.1 - 0.42 * u, sgn * (0.14 + 0.16 * u)];
-    lift[i] = 1;
-    this.pose.abdomenBend = 0.05 * sgn * u;
+    const wing = this._wingOpenTarget;
+    wing[0] = wing[1] = 0;
+    const hindUp = a.name !== "rubFront" && a.name !== "sweepHead";
+    if (hindUp) {
+      feet[0] = [0.6, -0.43];
+      feet[1] = [0.6, 0.43];
+      feet[2] = [-0.04, -0.63];
+      feet[3] = [-0.04, 0.63];
+    } else {
+      feet[2] = [0.13, -0.57];
+      feet[3] = [0.13, 0.57];
+      feet[4] = [-0.46, -0.5];
+      feet[5] = [-0.46, 0.5];
+    }
+    if (a.name === "rubFront") {
+      const w = TAU * u;
+      for (const [i, sgn] of [[0, -1], [1, 1]]) {
+        feet[i] = [0.585 + 0.045 * Math.sin(w) * sgn, sgn * (0.05 + 0.022 * Math.cos(w))];
+        lift[i] = 1;
+      }
+      p.headYaw = 0.04 * Math.sin(a.t * 5);
+    } else if (a.name === "sweepHead") {
+      for (const [i, sgn] of [[0, -1], [1, 1]]) {
+        const v = (u + (sgn > 0 ? 0.07 : 0)) % 1;
+        const [x, y, on] = stroke(v, 0.55, [0.37, 0.25], [0.61, 0.035], -0.06, 0.11);
+        feet[i] = [x, sgn * y];
+        lift[i] = on ? 0.7 : 1;
+        p.over[i] = on ? 1 : 0;
+      }
+      p.headYaw = 0.06 * Math.sin(TAU * u);
+    } else if (a.name === "sweepAbdomen") {
+      for (const [i, sgn] of [[4, -1], [5, 1]]) {
+        const [x, y, on] = stroke(u, 0.6, [-0.21, 0.31], [-0.6, 0.05], -0.06, 0.15);
+        feet[i] = [x, sgn * y];
+        lift[i] = 1;
+        p.over[i] = on ? 1 : 0;
+      }
+      wing[0] = wing[1] = 0.55;
+      p.abdomenBend = 0.03 * Math.sin(TAU * u);
+    } else if (a.name === "rubHind") {
+      const w = TAU * u;
+      for (const [i, sgn] of [[4, -1], [5, 1]]) {
+        feet[i] = [-0.67 + 0.045 * Math.sin(w) * sgn, -sgn * 0.024 + 0.012 * Math.cos(w)];
+        lift[i] = 1;
+      }
+      wing[0] = wing[1] = 0.25;
+    } else if (a.name === "sweepWing") {
+      const on = u < 0.62;
+      const q = on ? 0.5 - 0.5 * Math.cos(Math.PI * u / 0.62) : (u - 0.62) / 0.38;
+      const open = on ? 0.55 - 1.15 * q : 0;
+      for (const [i, sgn, k] of [[4, -1, 0], [5, 1, 1]]) {
+        if (a.side && a.side !== sgn) {
+          feet[i] = [-0.42, sgn * 0.46];
+          continue;
+        }
+        wing[k] = open;
+        const ang = WING_REST_ANGLE + (WING_OUT_ANGLE - WING_REST_ANGLE) * open;
+        const ax = Math.cos(ang);
+        const ay = Math.sin(ang);
+        let s0, n0;
+        if (on) {
+          s0 = 0.38 + 0.42 * q;
+          n0 = 0.07 - 0.12 * q;
+        } else {
+          s0 = 0.8 - 0.42 * q;
+          n0 = -0.05 + 0.12 * q + 0.22 * Math.sin(Math.PI * q);
+        }
+        const x = WING_BASE[0] + s0 * ax + n0 * ay;
+        const y = WING_BASE[1] + s0 * ay - n0 * ax;
+        feet[i] = [x, sgn * y];
+        lift[i] = 1;
+        p.over[i] = 1;
+        p.abdomenBend += 0.05 * sgn * (on ? Math.sin(Math.PI * q) : 0);
+      }
+    }
+    for (let i = 0; i < 6; i++) feet[i] = this._clampToReach(i, feet[i][0], feet[i][1]);
     return [feet, lift];
   }
   _poseIdle(t) {
@@ -833,11 +955,15 @@ var Fly = class {
     this._reactToCursor(dt);
     this.stateT += dt;
     const p = this.pose;
+    const s = this.state;
     p.headYaw = 0;
     p.abdomenBend = 0;
     p.bodySquash = 1;
+    p.over.fill(0);
+    const wingOpen = this._wingOpenTarget;
+    wingOpen[0] = wingOpen[1] = 0;
+    if (s !== GROOM_FRONT && s !== GROOM_HIND && s !== GROOM_WING) this.groomAct = null;
     let targetLift = null;
-    const s = this.state;
     if (s === WALK) {
       this._updateWalk(dt);
       this._foldWings(p, dt);
@@ -846,13 +972,14 @@ var Fly = class {
     } else if (s === IDLE || s === GROOM_FRONT || s === GROOM_HIND || s === GROOM_WING) {
       this.height = 0;
       this._foldWings(p, dt);
-      let feet;
-      if (s === IDLE) [feet, targetLift] = this._poseIdle(this.stateT);
-      else if (s === GROOM_FRONT) [feet, targetLift] = this._poseGroomFront(this.stateT);
-      else if (s === GROOM_HIND) [feet, targetLift] = this._poseGroomHind(this.stateT);
-      else [feet, targetLift] = this._poseGroomWing(this.stateT);
-      p.feet = feet;
-      if (this.stateT >= this.stateDur) this._nextGroundState();
+      if (s === IDLE) {
+        [p.feet, targetLift] = this._poseIdle(this.stateT);
+        if (this.stateT >= this.stateDur) this._nextGroundState();
+      } else {
+        const groomed = this._poseGroom(dt);
+        if (groomed) [p.feet, targetLift] = groomed;
+        else this._nextGroundState();
+      }
     } else if (s === LAUNCH) {
       const u = smoothstep(this.stateT / this.stateDur);
       [p.feet, targetLift] = this._poseLaunch(u);
@@ -895,6 +1022,9 @@ var Fly = class {
     }
     this._justEntered = false;
     if (targetLift) p.lift = targetLift;
+    const kw = Math.min(1, 24 * dt);
+    p.wingOpen[0] += (wingOpen[0] - p.wingOpen[0]) * kw;
+    p.wingOpen[1] += (wingOpen[1] - p.wingOpen[1]) * kw;
     if (this._blendT < 1) {
       this._blendT = Math.min(1, this._blendT + dt / this._blendTime);
       const k = smoothstep(this._blendT);
@@ -1946,11 +2076,7 @@ var LEG = [0.1, 0.1, 0.115];
 var LEG_LIT = [0.3, 0.31, 0.345];
 var VEIN = [0.3, 0.3, 0.345];
 var TARSUS = [0.52, 0.5, 0.28];
-var WING_BASE = [0.05, 0.1];
-var WING_LEN = 0.84;
 var WING_HALFW = 0.28;
-var WING_REST_ANGLE = 143 * Math.PI / 180;
-var WING_OUT_ANGLE = 118 * Math.PI / 180;
 var WING_BEAT_MID = 112 * Math.PI / 180;
 var WING_BEAT_AMP = 33 * Math.PI / 180;
 var WING_FLAT = "rgba(160,166,175,0.55)";
@@ -2087,7 +2213,7 @@ function ik(coxa, foot, femur, tibia, sign) {
   const ang = Math.atan2(dy, dx) + sign * Math.acos(cosK);
   return [coxa[0] + femur * Math.cos(ang), coxa[1] + femur * Math.sin(ang)];
 }
-function drawLeg(ctx, idx, foot, lift, detail) {
+function drawLeg(ctx, idx, foot, lift, detail, onTop = false) {
   const [coxa, , femur, tibia, tarsus, kneeSign] = LEGS[idx];
   const lat = idx % 2 ? 1 : -1;
   const ax = foot[0] - coxa[0];
@@ -2098,11 +2224,13 @@ function drawLeg(ctx, idx, foot, lift, detail) {
   const col = rgb(mix(LEG, LEG_LIT, 0.25 + 0.5 * lift));
   const thick = 1 + 0.15 * lift;
   ctx.strokeStyle = col;
-  ctx.lineWidth = 0.017 * thick;
-  ctx.beginPath();
-  ctx.moveTo(coxa[0], coxa[1]);
-  ctx.lineTo(knee[0], knee[1]);
-  ctx.stroke();
+  if (!onTop) {
+    ctx.lineWidth = 0.017 * thick;
+    ctx.beginPath();
+    ctx.moveTo(coxa[0], coxa[1]);
+    ctx.lineTo(knee[0], knee[1]);
+    ctx.stroke();
+  }
   ctx.lineWidth = 0.012 * thick;
   ctx.beginPath();
   ctx.moveTo(knee[0], knee[1]);
@@ -2174,8 +2302,11 @@ function drawWings(ctx, g, pose, detail) {
     }
     return;
   }
-  const angle = WING_REST_ANGLE + (WING_OUT_ANGLE - WING_REST_ANGLE) * pose.wingSpread;
-  for (const sign of [-1, 1]) drawWing(ctx, g, sign, angle, 0.5, detail);
+  const span = WING_OUT_ANGLE - WING_REST_ANGLE;
+  for (const [sign, k] of [[-1, 0], [1, 1]]) {
+    const angle = WING_REST_ANGLE + span * (pose.wingSpread + pose.wingOpen[k]);
+    drawWing(ctx, g, sign, angle, 0.5, detail);
+  }
 }
 function drawBody(ctx, g, pose) {
   const lv = pose.light;
@@ -2280,6 +2411,9 @@ function drawFly(ctx, scale, heading, pose, dpr = 1, detailMode = "auto") {
   for (let i = 0; i < pose.feet.length; i++) drawLeg(ctx, i, pose.feet[i], pose.lift[i] ?? 0, detail);
   drawBody(ctx, g, pose);
   drawWings(ctx, g, pose, detail);
+  for (let i = 0; i < pose.feet.length; i++) {
+    if (pose.over[i]) drawLeg(ctx, i, pose.feet[i], pose.lift[i] ?? 0, detail, true);
+  }
   ctx.restore();
 }
 

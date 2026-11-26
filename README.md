@@ -125,6 +125,15 @@ on the page and the two tripods swing alternately, each leg solved by two-bone
 inverse kinematics. The legs push against the surface instead of looping a
 canned animation.
 
+**Grooming** comes in bouts made of distinct acts, each a whole number of
+strokes. The front legs rub against each other in front of the head, then
+reach up behind the eyes and sweep forward over them. The hind legs sweep down
+the sides of the abdomen together and off past its tip. To clean a wing, one
+hind leg comes up over it from outside, presses it out and strokes it back to
+the tip, and the wing springs back when it is let go. Between strokes the hind
+feet cross behind the abdomen and rub each other clean. The four legs left
+standing spread out to carry the fly.
+
 **Take-off** is immediate. A house fly's take-off is over in roughly 50 ms
 with the wings already at full stroke, so there is no beetle-like spreading
 and pausing.
@@ -215,8 +224,11 @@ npm run demo         # then open http://localhost:8000/demo/
 npm run check:browser -- http://localhost:8000/demo/   # end-to-end check in headless Chromium
 ```
 
-The demo page has live controls for most options. `demo/gallery.html` draws
-both animals large and still. The tests run the simulation for simulated
+The demo page has live controls for most options, and an inspection box: a
+separate arena where the camera rides on the fly or the spider, so the animal
+stays put and the ground moves under it. It has a behaviour picker, slow
+motion, and two camera modes, *north up* (the animal turns) and *heading up*
+(the ground turns). `demo/gallery.html` draws both animals large and still. The tests run the simulation for simulated
 minutes at a time: flight is nose-first and saccadic, legs stay in reach,
 the spider keeps to the border and usually misses, a capture runs seize →
 haul → feed, and the fly reacts to the pointer as described above.

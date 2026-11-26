@@ -43,6 +43,24 @@
   #panel .row { display: flex; gap: .4rem; margin-top: .6rem; }
   #panel .row button { flex: 1; font: inherit; padding: .25rem; border: 1px solid #b9ad99; border-radius: 4px; background: #f4efe6; cursor: pointer; }
   #stats { margin-top: .5rem; color: #6b5f50; font-variant-numeric: tabular-nums; }
+
+  #lens { margin: 1.2rem 0 0; }
+  #lens canvas { display: block; width: 100%; height: 22rem; border-radius: 6px; border: 1px solid #cfc3ae; }
+  #lens-status { min-height: 1.6em; margin: .4rem 0 .6rem; color: #6b5f50; font-style: italic; font-variant-numeric: tabular-nums; }
+  .lens-controls { display: grid; grid-template-columns: 6.5rem 1fr; gap: .45rem .8rem; align-items: center; font: 14px/1.4 system-ui, sans-serif; }
+  .lens-controls > span { color: #6b5f50; }
+  .seg { justify-self: start; display: inline-flex; flex-wrap: wrap; border: 1px solid #b9ad99; border-radius: 4px; overflow: hidden; }
+  .seg label { position: relative; }
+  .seg input { position: absolute; opacity: 0; pointer-events: none; }
+  .seg span { display: block; padding: .2rem .65rem; background: #fffdf8; cursor: pointer; border-right: 1px solid #e0d6c4; }
+  .seg label:last-child span { border-right: 0; }
+  .seg input:checked + span { background: #2b2620; color: #f4efe6; }
+  .seg input:focus-visible + span { outline: 2px solid #8a7a62; outline-offset: -2px; }
+  .lens-controls select, .lens-controls button { font: inherit; padding: .2rem .5rem; border: 1px solid #b9ad99; border-radius: 4px; background: #fffdf8; cursor: pointer; }
+  .lens-controls .buttons { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }
+  .lens-controls input[type=range] { width: 10rem; vertical-align: middle; }
+  .hint { color: #8a7a62; font-size: 13px; }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
@@ -77,6 +95,69 @@
   fly moves, and leaps from about seven body lengths out. The fly ignores it creeping up
   but bolts at the leap, and usually gets away.</p>
 
+  <h2>Under the lens</h2>
+  <p>A small arena of its own, with its own fly and spider. The camera rides on one of
+  them, so the animal stays in the middle of the box and the ground moves under it. Slow
+  time down to see the legs at work.</p>
+
+  <figure id="lens">
+    <canvas id="lens-canvas"></canvas>
+    <figcaption id="lens-status"></figcaption>
+    <div class="lens-controls">
+      <span>Watch</span>
+      <div class="seg" role="radiogroup" aria-label="Watch">
+        <label><input type="radio" name="lens-subject" value="fly" checked><span>Fly</span></label>
+        <label><input type="radio" name="lens-subject" value="spider"><span>Spider</span></label>
+      </div>
+
+      <span>Camera</span>
+      <div>
+        <div class="seg" role="radiogroup" aria-label="Camera rotation">
+          <label><input type="radio" name="lens-rotation" value="north" checked><span>North up</span></label>
+          <label><input type="radio" name="lens-rotation" value="heading"><span>Heading up</span></label>
+        </div>
+        <span class="hint" id="lens-rotation-hint"></span>
+      </div>
+
+      <span id="lens-do-label">Behaviour</span>
+      <div>
+        <select id="lens-behaviour">
+          <option value="natural">Natural mix</option>
+          <option value="walk">Walk</option>
+          <option value="idle">Rest</option>
+          <option value="groomFront">Groom front legs and head</option>
+          <option value="groomHind">Groom abdomen</option>
+          <option value="groomWing">Groom wings</option>
+          <option value="fly">Fly</option>
+        </select>
+        <div class="buttons" id="lens-spider-actions" hidden>
+          <button type="button" data-state="lurk">Lurk</button>
+          <button type="button" data-state="patrol">Patrol</button>
+          <button type="button" data-state="hide">Hide</button>
+          <button type="button" id="lens-drop">Drop a fly in front of it</button>
+        </div>
+      </div>
+
+      <span>Time</span>
+      <div class="buttons">
+        <div class="seg" role="radiogroup" aria-label="Time">
+          <label><input type="radio" name="lens-time" value="1" checked><span>1&times;</span></label>
+          <label><input type="radio" name="lens-time" value="0.5"><span>&frac12;&times;</span></label>
+          <label><input type="radio" name="lens-time" value="0.25"><span>&frac14;&times;</span></label>
+          <label><input type="radio" name="lens-time" value="0.1"><span>1/10&times;</span></label>
+        </div>
+        <button type="button" id="lens-pause">Pause</button>
+        <button type="button" id="lens-step" disabled>Step</button>
+      </div>
+
+      <span>Zoom</span>
+      <div><input type="range" id="lens-zoom" min="1.5" max="8" step="0.5" value="4"> <output id="lens-zoom-out">4&times;</output></div>
+
+      <span></span>
+      <label><input type="checkbox" id="lens-spider" checked> spider in the arena</label>
+    </div>
+  </figure>
+
 </main>
 
 <aside id="panel">
@@ -100,6 +181,7 @@
 
 <script type="module">
   import { Myxa, DEFAULTS } from '../src/index.js';
+  import { Inspector } from './inspector.js';
 
   let toy = Myxa.start({ ignoreReducedMotion: true });
   window.toy = toy;
@@ -151,6 +233,48 @@
   document.getElementById('panel').addEventListener('input', updateSnippets);
   document.getElementById('panel').addEventListener('change', updateSnippets);
   updateSnippets();
+
+  // The inspection box.
+  const lens = new Inspector(document.getElementById('lens-canvas'), document.getElementById('lens-status'));
+  window.lens = lens;
+  const radios = (name, fn) => {
+    for (const r of document.querySelectorAll(`input[name=${name}]`)) r.addEventListener('change', () => fn(r.value));
+  };
+  const ROTATION_HINT = {
+    north: 'the ground keeps its bearing; the animal turns',
+    heading: 'the animal always faces up; the ground turns under it',
+  };
+  const showHint = (v) => { document.getElementById('lens-rotation-hint').textContent = ROTATION_HINT[v]; };
+  showHint('north');
+  radios('lens-rotation', (v) => { lens.setRotation(v); showHint(v); });
+  radios('lens-subject', (v) => {
+    lens.setSubject(v);
+    document.getElementById('lens-behaviour').hidden = v !== 'fly';
+    document.getElementById('lens-spider-actions').hidden = v !== 'spider';
+    document.getElementById('lens-do-label').textContent = v === 'fly' ? 'Behaviour' : 'Make it';
+    if (v === 'spider') document.getElementById('lens-spider').checked = true;
+  });
+  radios('lens-time', (v) => { lens.timeScale = Number(v); });
+  document.getElementById('lens-behaviour').addEventListener('change', (e) => lens.setFlyBehaviour(e.target.value));
+  for (const b of document.querySelectorAll('#lens-spider-actions [data-state]')) {
+    b.addEventListener('click', () => lens.setSpiderState(b.dataset.state));
+  }
+  document.getElementById('lens-drop').addEventListener('click', () => lens.dropFly());
+  document.getElementById('lens-pause').addEventListener('click', (e) => {
+    const paused = lens.togglePause();
+    e.target.textContent = paused ? 'Play' : 'Pause';
+    document.getElementById('lens-step').disabled = !paused;
+  });
+  document.getElementById('lens-step').addEventListener('click', () => lens.step());
+  document.getElementById('lens-zoom').addEventListener('input', (e) => {
+    lens.zoom = Number(e.target.value);
+    document.getElementById('lens-zoom-out').textContent = `${e.target.value}×`;
+    if (lens.paused) lens.redraw();
+  });
+  document.getElementById('lens-spider').addEventListener('change', (e) => {
+    lens.setSpider(e.target.checked);
+    if (!e.target.checked && lens.subject === 'spider') document.querySelector('input[name=lens-subject][value=fly]').click();
+  });
 
   let clicks = 0;
   document.getElementById('btn').addEventListener('click', () => {
